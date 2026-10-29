@@ -1,0 +1,99 @@
+{
+  "name": "capri-companion-local",
+  "version": "0.4.4-companion.8",
+  "description": "Personal desktop companion based on Capri Desktop by mochiiwuff, with local replies and optional AI.",
+  "author": "mochiiwuff",
+  "repository": "github:mochiiwuff/capri-desktop",
+  "main": "src/main/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "demo": "node scripts/demo.js",
+    "hooks:install": "node scripts/install-hooks.js",
+    "hooks:uninstall": "node scripts/install-hooks.js --uninstall",
+    "hooks:codex:install": "node scripts/install-codex-hooks.js",
+    "hooks:codex:uninstall": "node scripts/install-codex-hooks.js --uninstall",
+    "hooks:agy:install": "node scripts/install-hooks-agy.js",
+    "hooks:agy:uninstall": "node scripts/install-hooks-agy.js --uninstall",
+    "check:llm": "node scripts/check-llm.js",
+    "test:hooks": "node --test tests/hooks.test.js",
+    "dist": "electron-builder --win",
+    "dist:portable": "electron-builder --win portable --x64",
+    "dist:dir": "electron-builder --win --x64 --dir"
+  },
+  "keywords": [
+    "claude-code",
+    "desktop-pet",
+    "electron",
+    "cyberpunk",
+    "edgerunners"
+  ],
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "electron": "^44.9.3",
+    "electron-builder": "^26.18.0"
+  },
+  "dependencies": {
+    "@fontsource/chakra-petch": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0"
+  },
+  "build": {
+    "appId": "capri.companion.local",
+    "productName": "Capri Companion",
+    "files": [
+      "src/**",
+      "assets/**",
+      "hooks/**",
+      "scripts/**",
+      "package.json",
+      "LICENSE",
+      "COMPANION-README.ru.md",
+      "КАК ПОЛЬЗОВАТЬСЯ КАПРИ.txt"
+    ],
+    "asarUnpack": [
+      "hooks/**",
+      "src/main/windows.ps1",
+      "src/main/companion-media.ps1",
+      "src/main/companion-voice.ps1"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icons/capri.ico",
+      "executableName": "Capri Companion"
+    },
+    "artifactName": "Capri-Companion-${version}-win-${arch}.${ext}",
+    "directories": {
+      "output": "../dist/companion"
+    },
+    "extraFiles": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE-Capri-Desktop.txt"
+      },
+      {
+        "from": "COMPANION-README.ru.md",
+        "to": "Прочитай меня.md"
+      },
+      {
+        "from": "КАК ПОЛЬЗОВАТЬСЯ КАПРИ.txt",
+        "to": "КАК ПОЛЬЗОВАТЬСЯ КАПРИ.txt"
+      }
+    ],
+    "portable": {
+      "requestExecutionLevel": "user",
+      "unpackDirName": true
+    }
+  },
+  "productName": "Capri Companion"
+}

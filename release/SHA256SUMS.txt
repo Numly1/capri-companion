@@ -1,0 +1,5 @@
+a2ed5929b4a5fcc20a296369506e8428933762117af94c9dc5a62cecc75f8c1e  Capri-Download.exe
+ec803f3c0bbd8c02bee2aa1cc725d279e11359ac6ac87861f4cc3005a40ec21b  capri-ready-manifest.json
+f28502524bb0751003834b3a7222f93e29205008edd8ca910d0ef85896a7536d  capri-ready-win-x64.zip.part01
+f7e8b46ba2a943e87acd30bf3035da62cef624948a17ea7a87a5c534dd62ba76  capri-ready-win-x64.zip.part02
+1f0fb2647173974d5399ad72b4f612ec57157e3b740caf1c0aaf1c0ff8e145c0  capri-ready-win-x64.zip.part03

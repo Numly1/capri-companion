@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+  "revision": "fd4b254389122332181a7c3db7f27e918eec64e3",
+  "language": "ru",
+  "referenceSHA256": "f5916476b6e4eedbc7f79f8033d58eb3b504f0a2ad914a645d5067f3688107c7",
+  "generation": {
+    "speakerOnly": true,
+    "referenceText": false,
+    "temperature": 0.75,
+    "seed": 42
+  },
+  "loadSeconds": 4.11,
+  "clips": {
+    "Мы рядом. Продолжай, художница.": "preview.wav",
+    "Мы рядом, чум.": "ambient-01.wav",
+    "Сигнал стабильный. Продолжаем.": "ambient-02.wav",
+    "Небольшой перерыв не помешает.": "ambient-03.wav",
+    "Этот глич был намеренным.": "ambient-04.wav"
+  },
+  "audio": [
+    {
+      "file": "preview.wav",
+      "sampleRate": 24000,
+      "channels": 1,
+      "seconds": 2.64,
+      "rms": 0.082828,
+      "bytes": 126764,
+      "sha256": "ede1da1036178897aa4ba94d7a7e6502e2d241f133dbae0e1e0f1120f34eaee2"
+    },
+    {
+      "file": "ambient-01.wav",
+      "sampleRate": 24000,
+      "channels": 1,
+      "seconds": 1.36,
+      "rms": 0.055553,
+      "bytes": 65324,
+      "sha256": "fb0ebacdb314334c677644586b549173b3078b98018619f9a4a0fe75a4eec7d7",
+      "generationSeconds": 16.21
+    },
+    {
+      "file": "ambient-02.wav",
+      "sampleRate": 24000,
+      "channels": 1,
+      "seconds": 2.8,
+      "rms": 0.062904,
+      "bytes": 134444,
+      "sha256": "2021871601d5556f17aa78846d2701b729c35184ac0b4032c4809b6bb894e32a",
+      "generationSeconds": 23.51
+    },
+    {
+      "file": "ambient-03.wav",
+      "sampleRate": 24000,
+      "channels": 1,
+      "seconds": 2.0,
+      "rms": 0.095397,
+      "bytes": 96044,
+      "sha256": "16414b072651e096e175bb79fb2c7eb6f29070f4a77dcce3cdf0d24369cde579",
+      "generationSeconds": 17.34
+    },
+    {
+      "file": "ambient-04.wav",
+      "sampleRate": 24000,
+      "channels": 1,
+      "seconds": 2.24,
+      "rms": 0.052434,
+      "bytes": 107564,
+      "sha256": "032f41993c7a7e184f6520e70a8971de17f8cded282981e20877faa8038ccdcb",
+      "generationSeconds": 19.09
+    }
+  ],
+  "similarity": "preview-approved-by-user; generated-clips-not-separately-reviewed",
+  "referenceFile": "reference.wav",
+  "reference": {
+    "file": "reference.wav",
+    "sampleRate": 24000,
+    "channels": 1,
+    "seconds": 7.95,
+    "rms": 0.094243,
+    "bytes": 381754,
+    "sha256": "f5916476b6e4eedbc7f79f8033d58eb3b504f0a2ad914a645d5067f3688107c7",
+    "role": "reference-only"
+  }
+}

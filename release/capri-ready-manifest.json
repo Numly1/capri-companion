@@ -1,0 +1,24 @@
+{
+  "version": "0.4.4-companion.8",
+  "archiveBytes": 4199165651,
+  "archiveSha256": "6d95a7d8dc33965fd24e87d941643398b78491914a329ce14597924a799cb319",
+  "unpackedBytes": 5722450647,
+  "launcherSha256": "2a4caa05663701f81292525d4dfc99cea148eefed1b7da379414c351f1fdbf16",
+  "parts": [
+    {
+      "name": "capri-ready-win-x64.zip.part01",
+      "bytes": 1800000000,
+      "sha256": "f28502524bb0751003834b3a7222f93e29205008edd8ca910d0ef85896a7536d"
+    },
+    {
+      "name": "capri-ready-win-x64.zip.part02",
+      "bytes": 1800000000,
+      "sha256": "f7e8b46ba2a943e87acd30bf3035da62cef624948a17ea7a87a5c534dd62ba76"
+    },
+    {
+      "name": "capri-ready-win-x64.zip.part03",
+      "bytes": 599165651,
+      "sha256": "1f0fb2647173974d5399ad72b4f612ec57157e3b740caf1c0aaf1c0ff8e145c0"
+    }
+  ]
+}
