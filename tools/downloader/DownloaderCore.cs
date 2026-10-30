@@ -8,6 +8,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 
 namespace CapriReadyDownload {
     internal sealed class PartInfo {
@@ -17,6 +18,7 @@ namespace CapriReadyDownload {
     internal sealed class BundleSpec {
         public Uri BaseUri; public PartInfo[] Parts; public long ArchiveBytes; public string ArchiveSha;
         public string LauncherSha; public string LauncherName="Запустить Капри.exe";
+        public Uri UpdateUri; public long UpdateBytes; public string UpdateSha; public string UpdateVersion;
         public string RootName="Капри"; public long RequiredFreeBytes=11L*1024*1024*1024;
         public long UnpackedBytes=5722450647L; public long SafetyBytes=1024L*1024*1024;
     }
@@ -52,8 +54,29 @@ namespace CapriReadyDownload {
         internal static bool Installed(string final,BundleSpec spec,CancellationToken token) {
             var marker=Path.Combine(final,".capri-installed.sha256");
             var launcher=Path.Combine(final,spec.LauncherName);
-            return File.Exists(marker) && File.ReadAllText(marker).Trim()==spec.ArchiveSha &&
-                File.Exists(launcher) && Hash(launcher,token).Equals(spec.LauncherSha,StringComparison.OrdinalIgnoreCase);
+            if(!File.Exists(marker) || File.ReadAllText(marker).Trim()!=spec.ArchiveSha || !File.Exists(launcher)) return false;
+            var hash=Hash(launcher,token);
+            return hash.Equals(spec.LauncherSha,StringComparison.OrdinalIgnoreCase) ||
+                (HasUpdate(spec) && hash.Equals(spec.UpdateSha,StringComparison.OrdinalIgnoreCase));
+        }
+        static bool HasUpdate(BundleSpec spec) { return spec.UpdateUri!=null && spec.UpdateBytes>0 && !String.IsNullOrEmpty(spec.UpdateSha); }
+        static void WriteUpdateReceipt(string prepared,BundleSpec spec) {
+            var serializer=new JavaScriptSerializer { MaxJsonLength=32*1024*1024 };
+            var manifestPath=Path.Combine(prepared,"bundle-manifest.json");
+            if(!File.Exists(manifestPath) || new FileInfo(manifestPath).Length>32*1024*1024) throw new InvalidDataException("Манифест комплекта не прошёл проверку.");
+            var manifest=serializer.Deserialize<Dictionary<string,object>>(File.ReadAllText(manifestPath));
+            object entryPoint,filesObject;
+            if(!manifest.TryGetValue("entryPoint",out entryPoint) || !(entryPoint is string) || (string)entryPoint!=spec.LauncherName || !manifest.TryGetValue("files",out filesObject)) throw new InvalidDataException("Манифест запуска не прошёл проверку.");
+            var entries=filesObject as Dictionary<string,object>;
+            if(entries==null || !entries.ContainsKey(spec.LauncherName)) throw new InvalidDataException("Манифест запуска не прошёл проверку.");
+            manifest["version"]=spec.UpdateVersion;
+            entries[spec.LauncherName]=new Dictionary<string,object> { {"bytes",spec.UpdateBytes},{"sha256",spec.UpdateSha} };
+            File.WriteAllText(manifestPath,serializer.Serialize(manifest),new UTF8Encoding(false));
+            var receipt=new Dictionary<string,object> {
+                {"format","capri-app-update"},{"version",spec.UpdateVersion},{"launcher",spec.LauncherName},
+                {"bytes",spec.UpdateBytes},{"launcherSha256",spec.UpdateSha},{"baseArchiveSha256",spec.ArchiveSha},{"updatedUtc",DateTime.UtcNow.ToString("o")}
+            };
+            File.WriteAllText(Path.Combine(prepared,".capri-update.json"),serializer.Serialize(receipt),new UTF8Encoding(false));
         }
         internal static void CheckDestination(string final) {
             if(Directory.Exists(final) || File.Exists(final)) throw new IOException("В выбранной папке уже есть Капри. Её файлы останутся на месте. Выберите другую папку.");
@@ -141,8 +164,13 @@ namespace CapriReadyDownload {
         }
         internal static async Task<string> Install(BundleSpec spec,string parent,IProgress<SetupProgress> progress,CancellationToken token) {
             if(!AllowedUri(spec.BaseUri)) throw new InvalidDataException("Адрес загрузки не прошёл проверку.");
+            if((spec.UpdateUri!=null || spec.UpdateBytes!=0 || spec.UpdateSha!=null) && (!HasUpdate(spec) || !AllowedUri(spec.UpdateUri) || spec.UpdateSha.Length!=64 || String.IsNullOrEmpty(spec.UpdateVersion))) throw new InvalidDataException("Обновление не прошло проверку параметров.");
             var final=FinalDirectory(parent,spec);
-            if(await Task.Run(delegate { return Installed(final,spec,token); },token).ConfigureAwait(false)) return final;
+            if(await Task.Run(delegate { return Installed(final,spec,token); },token).ConfigureAwait(false)) {
+                if(HasUpdate(spec) && !Verified(Path.Combine(final,spec.LauncherName),spec.UpdateBytes,spec.UpdateSha,token))
+                    throw new IOException("Капри уже установлена. Для обновления скачай Capri-Update.exe из нового выпуска. Голос останется на месте — качать его снова не нужно.");
+                return final;
+            }
             CheckDestination(final);
             var cache=Path.Combine(parent,".capri-download-"+spec.ArchiveSha.Substring(0,12));
             var owner=Path.Combine(cache,"owner.sha256");
@@ -189,10 +217,35 @@ namespace CapriReadyDownload {
                 foreach(var path in paths) File.Delete(path); // Verified ZIP now replaces its own downloaded parts.
             }
             token.ThrowIfCancellationRequested();
+            string update=null;
+            // Fetch every required file before expanding the multi-gigabyte bundle. A failed
+            // application download must not leave another full extracted copy on each retry.
+            if(HasUpdate(spec)) {
+                update=Path.Combine(cache,"launcher-update-"+spec.UpdateSha.Substring(0,12)+".exe");
+                if(!await Task.Run(delegate { return Verified(update,spec.UpdateBytes,spec.UpdateSha,token); },token).ConfigureAwait(false)) {
+                    var partial=update+".partial";
+                    Report(progress,"Скачиваю последнюю версию приложения…",0.77);
+                    using(var handler=new HttpClientHandler { AllowAutoRedirect=false, AutomaticDecompression=DecompressionMethods.None })
+                    using(var client=new HttpClient(handler)) {
+                        client.Timeout=Timeout.InfiniteTimeSpan; client.DefaultRequestHeaders.UserAgent.ParseAdd("CapriReadyDownloader/1.1");
+                        await DownloadPart(client,spec.UpdateUri,partial,new PartInfo("launcher",spec.UpdateBytes,spec.UpdateSha),0,spec.UpdateBytes,null,token).ConfigureAwait(false);
+                    }
+                    if(!await Task.Run(delegate { return Verified(partial,spec.UpdateBytes,spec.UpdateSha,token); },token).ConfigureAwait(false)) throw new InvalidDataException("Обновление не прошло проверку. Файл не будет запущен.");
+                    if(File.Exists(update)) File.Move(update,update+".invalid-"+Guid.NewGuid().ToString("N"));
+                    File.Move(partial,update);
+                }
+            }
+            token.ThrowIfCancellationRequested();
             var unpack=Path.Combine(cache,"unpack-"+Guid.NewGuid().ToString("N"));
             await Task.Run(delegate { ExtractSafe(zip,unpack,progress,token); },token).ConfigureAwait(false);
             var prepared=Path.Combine(unpack,spec.RootName); var launcher=Path.Combine(prepared,spec.LauncherName);
             if(!File.Exists(launcher) || !Hash(launcher,token).Equals(spec.LauncherSha,StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Проверка запуска Капри не прошла.");
+            if(HasUpdate(spec)) {
+                token.ThrowIfCancellationRequested();
+                File.Copy(update,launcher,true); // Only this new staging folder; an existing installation is never overwritten.
+                if(!Verified(launcher,spec.UpdateBytes,spec.UpdateSha,token)) throw new InvalidDataException("Проверка новой Капри не прошла.");
+                WriteUpdateReceipt(prepared,spec);
+            }
             token.ThrowIfCancellationRequested();
             File.WriteAllText(Path.Combine(prepared,".capri-installed.sha256"),spec.ArchiveSha);
             CheckDestination(final); Directory.Move(prepared,final);

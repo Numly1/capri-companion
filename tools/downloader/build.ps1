@@ -4,10 +4,27 @@ param(
   [string]$Tag='v0.4.4-companion.8',
   [Parameter(Mandatory=$true)][string]$ManifestPath,
   [Parameter(Mandatory=$true)][string]$OutputPath,
-  [string]$IconPath=''
+  [string]$IconPath='',
+  [string]$UpdateExePath='',
+  [string]$UpdateTag=''
 )
 $ErrorActionPreference='Stop'
 foreach ($capriIdentifier in @($Owner,$Repo,$Tag)) { if ($capriIdentifier -notmatch '^[A-Za-z0-9_.-]+$') { throw 'Invalid GitHub identifier.' } }
+$capriCurrentTag=$Tag
+$capriUpdateCode=''
+if ($UpdateExePath -or $UpdateTag) {
+  if (-not $UpdateExePath -or $UpdateTag -notmatch '^v[0-9][A-Za-z0-9_.-]*$') { throw 'UpdateExePath and a version UpdateTag must both be supplied.' }
+  $capriUpdateFile=Get-Item -LiteralPath $UpdateExePath
+  if ($capriUpdateFile.PSIsContainer -or $capriUpdateFile.Name -notmatch '^[A-Za-z0-9_.-]+\.exe$' -or $capriUpdateFile.Length -lt 1 -or $capriUpdateFile.Length -gt 536870912) { throw 'Invalid update executable.' }
+  $capriUpdateSha=(Get-FileHash -LiteralPath $capriUpdateFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+  $capriCurrentTag=$UpdateTag
+  $capriUpdateCode=@"
+ UpdateUri=new System.Uri("https://github.com/$Owner/$Repo/releases/download/$UpdateTag/$($capriUpdateFile.Name)"),
+ UpdateBytes=$($capriUpdateFile.Length)L,
+ UpdateSha="$capriUpdateSha",
+ UpdateVersion="$($UpdateTag.Substring(1))",
+"@
+}
 $capriManifest=Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
 if ([long]$capriManifest.archiveBytes -ne 4199165651 -or [long]$capriManifest.unpackedBytes -ne 5722450647 -or $capriManifest.archiveSha256 -ne '6d95a7d8dc33965fd24e87d941643398b78491914a329ce14597924a799cb319' -or $capriManifest.launcherSha256 -ne '2a4caa05663701f81292525d4dfc99cea148eefed1b7da379414c351f1fdbf16') { throw 'Manifest does not describe the verified ready bundle.' }
 $capriParts=@($capriManifest.parts)
@@ -24,12 +41,13 @@ if ($capriTotal -ne 4199165651) { throw 'Archive size differs from the verified 
 $capriGenerated=@"
 namespace CapriReadyDownload {
 internal static class BuildInfo {
- internal const string Tag="$Tag";
+ internal const string Tag="$capriCurrentTag";
  internal static readonly BundleSpec Bundle=new BundleSpec {
  BaseUri=new System.Uri("https://github.com/$Owner/$Repo/releases/download/$Tag/"),
  ArchiveBytes=4199165651L,
  ArchiveSha="6d95a7d8dc33965fd24e87d941643398b78491914a329ce14597924a799cb319",
  LauncherSha="2a4caa05663701f81292525d4dfc99cea148eefed1b7da379414c351f1fdbf16",
+$capriUpdateCode
  Parts=new PartInfo[] { $($capriPartCode -join ',') }
  };
 }}
@@ -40,7 +58,7 @@ $capriCompiler=Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\c
 if (-not (Test-Path -LiteralPath $capriCompiler)) { throw 'The Windows .NET Framework compiler is unavailable.' }
 $capriOutput=[IO.Path]::GetFullPath($OutputPath)
 New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($capriOutput)) -Force | Out-Null
-$capriReferences=@('System.dll','System.Core.dll','System.Net.Http.dll','System.Drawing.dll','System.Windows.Forms.dll','System.IO.Compression.dll','System.IO.Compression.FileSystem.dll')
+$capriReferences=@('System.dll','System.Core.dll','System.Net.Http.dll','System.Drawing.dll','System.Windows.Forms.dll','System.IO.Compression.dll','System.IO.Compression.FileSystem.dll','System.Web.Extensions.dll')
 $capriArguments=@('/nologo','/target:winexe','/platform:anycpu','/optimize+',('/out:'+$capriOutput),('/win32manifest:'+(Join-Path $PSScriptRoot 'app.manifest'))) + @($capriReferences | ForEach-Object { '/reference:'+$_ }) + @((Join-Path $PSScriptRoot 'DownloaderCore.cs'),(Join-Path $PSScriptRoot 'Program.cs'),(Join-Path $PSScriptRoot 'AssemblyInfo.cs'),$capriGeneratedPath)
 $capriIcon=$null
 if ($IconPath) {
@@ -57,4 +75,4 @@ if ($IconPath) {
 if ($capriIcon) { $capriArguments=@('/win32icon:'+$capriIcon)+$capriArguments }
 & $capriCompiler @capriArguments
 if ($LASTEXITCODE -ne 0) { throw 'Downloader compilation failed.' }
-[pscustomobject]@{ok=$true;file=$capriOutput;bytes=(Get-Item -LiteralPath $capriOutput).Length;sha256=(Get-FileHash -LiteralPath $capriOutput -Algorithm SHA256).Hash;downloadBase="https://github.com/$Owner/$Repo/releases/download/$Tag/"} | ConvertTo-Json
+[pscustomobject]@{ok=$true;file=$capriOutput;bytes=(Get-Item -LiteralPath $capriOutput).Length;sha256=(Get-FileHash -LiteralPath $capriOutput -Algorithm SHA256).Hash;downloadBase="https://github.com/$Owner/$Repo/releases/download/$Tag/";version=$capriCurrentTag;updateSha256=$capriUpdateSha} | ConvertTo-Json

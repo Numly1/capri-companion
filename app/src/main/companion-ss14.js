@@ -20,9 +20,27 @@ const RULES = [
   { kind: 'alert-yellow', priority: 50, pattern: /(?:уровень угрозы(?: станции)?(?: теперь|:)?\s*(?:код\s*)?ж[её]лтый|объявлен[аоы]?[^.!?\n]{0,35}код\s*ж[её]лтый|alert level[^.!?\n]{0,25}yellow)/i },
   { kind: 'alert-blue', priority: 45, pattern: /(?:уровень угрозы(?: станции)?(?: теперь|:)?\s*(?:код\s*)?синий|объявлен[аоы]?[^.!?\n]{0,35}код\s*синий|alert level[^.!?\n]{0,25}blue)/i },
   { kind: 'alert-green', priority: 40, pattern: /(?:уровень угрозы(?: станции)?(?: теперь|:)?\s*(?:код\s*)?зел[её]ный|alert level[^.!?\n]{0,25}green)/i },
+  { kind: 'gas-leak', priority: 39, pattern: /(?:внимание[^.!?\n]{0,30}(?:на станции[^.!?\n]{0,20})?утечка газа|на станции (?:обнаружена|произошла) утечка газа|there is a gas leak on the station)/i },
+  { kind: 'meteor-start', priority: 38, pattern: /(?:обнаружены метеориты[^.!?\n]{0,50}(?:станци|столкнов)|метеоритный рой[^.!?\n]{0,35}(?:приближ|обнаруж)|meteors have been detected on collision course with the station)/i },
+  { kind: 'power-down', priority: 37, pattern: /(?:аномальн[а-яё ]{0,25}(?:электросет|энергосет)|abnormal activity detected in the station.s powernet)/i },
+  { kind: 'ion-storm', priority: 36, pattern: /(?:ионн(?:ая|ый) (?:буря|шторм) (?:обнаружен[ао]?|приближается)|обнаружен[ао]? ионн(?:ая|ый) (?:буря|шторм)|ion storm detected near the station)/i },
+  { kind: 'solar-start', priority: 35, pattern: /(?:солнечн(?:ая|ой) вспышк[аи][^.!?\n]{0,35}(?:обнаруж|вблизи|приближ)|обнаружена солнечная вспышка|a solar flare has been detected near the station)/i },
+  { kind: 'power-restored', priority: 34, pattern: /(?:(?:электропитание|электроснабжение) станции восстановлено|питание (?:станции |на станции )?восстановлено|power has been restored to the station)/i },
+  { kind: 'meteor-end', priority: 33, pattern: /(?:метеоритный рой (?:миновал|прош[её]л)|метеоритный дождь (?:завершился|закончился)|the meteor swarm has passed)/i },
+  { kind: 'solar-end', priority: 32, pattern: /(?:солнечная вспышка (?:закончилась|завершилась)|the solar flare ended)/i },
+  { kind: 'erp-mention', priority: 1, pattern: /(?:^|[^\p{L}\p{N}_])(?:ERP|ЕРП)(?=$|[^\p{L}\p{N}_])/iu },
 ];
 
 const LINES = Object.freeze({
+  'gas-leak': ['В объявлении утечка газа. Сверься с указаниями экипажа, чум. Я бы держалась подальше от неприятных сюрпризов.'],
+  'meteor-start': ['В объявлении предупреждение о метеоритах. Космос снова стучит без приглашения. Проверь сообщения экипажа, я рядом.'],
+  'power-down': ['На экране предупреждение об энергосети. Похоже, смена включает режим свечей. Инженерам сегодня скучать не дадут.'],
+  'ion-storm': ['Объявили ионный шторм. Если станционный ИИ начнёт чудить — проверяй объявления. Моя неоновая голова пока на месте.'],
+  'solar-start': ['По объявлению приближается солнечная вспышка. Связь может подвести, чум. Держи в голове, где твоя команда.'],
+  'power-restored': ['В сообщении восстановили питание. Свет вернулся — маленькая победа инженерной магии. Продолжаем смену.'],
+  'meteor-end': ['В объявлении метеоритный рой уже миновал. Космос закончил барабанить по станции. Можно чуть-чуть выдохнуть.'],
+  'solar-end': ['В сообщении солнечная вспышка закончилась. Связь возвращается, а я всё это время была рядом.'],
+  'erp-mention': ['ЕРП на станции? Осуждаю, чум. Лучше спасай смену — тут и без этого хватает цирка.'],
   'alert-delta': ['На экране объявление о Дельте. Хаос вышел на новый уровень. Проверь указания экипажа об эвакуации — я рядом.', 'По видимому объявлению включён протокол Дельта. Дышим ровно, читаем сообщения командования и держимся своих.'],
   'evac-docked': ['В сообщениях вижу: эвакуационный шаттл пристыковался. Если собираешься улетать, самое время проверить маршрут.', 'На экране сообщение о прибытии эвакуационного шаттла. Вот он, билет из станционного хаоса. Только без героизма на финише.'],
   'evac-departed': ['На экране пишут, что эвакуационный шаттл покинул станцию. Ну и смена. Надеюсь, у тебя там история для целой команды.', 'По сообщению шаттл уже отбыл. Я не вижу, кто на борту, но за такой финал мы точно заслужили передышку.'],
@@ -62,13 +80,13 @@ class SS14Tracker {
 
   sample(text, cfg = {}) {
     if (cfg.ss14Reactions !== true) { this.present.clear(); return null; }
-    const events = eventsFromText(text);
+    const events = eventsFromText(text).filter(event => event.kind !== 'erp-mention' || cfg.ss14ErpReaction !== false);
     const at = this.now();
     const fresh = events.filter(event => !this.present.has(event.kind));
     // Consume even suppressed opportunities: no burst of stale messages after a busy period.
     this.present = new Set(events.map(event => event.kind));
     if (at - this.lastAt < pauseFor(cfg)) return null;
-    const event = fresh.find(item => at - (this.lastKindAt.get(item.kind) ?? -Infinity) >= TYPE_COOLDOWN_MS);
+    const event = fresh.find(item => at - (this.lastKindAt.get(item.kind) ?? -Infinity) >= (item.kind === 'erp-mention' ? 30 * 60000 : TYPE_COOLDOWN_MS));
     if (!event) return null;
     this.lastAt = at; this.lastKindAt.set(event.kind, at);
     const lines = LINES[event.kind];

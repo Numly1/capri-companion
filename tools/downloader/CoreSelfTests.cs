@@ -8,6 +8,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 
 namespace CapriReadyDownload {
     internal sealed class FixtureServer : IDisposable {
@@ -45,6 +46,7 @@ namespace CapriReadyDownload {
             using(var archive=ZipFile.Open(zip,ZipArchiveMode.Create)) {
                 using(var output=archive.CreateEntry("Капри/Запустить Капри.exe").Open()) output.Write(launcher,0,launcher.Length);
                 using(var output=archive.CreateEntry("Капри/data.txt").Open()) { var payload=Encoding.UTF8.GetBytes(new String('Ж',2000)); output.Write(payload,0,payload.Length); }
+                using(var output=archive.CreateEntry("Капри/bundle-manifest.json").Open()) { var payload=Encoding.UTF8.GetBytes("{\"version\":\"old\",\"entryPoint\":\"Запустить Капри.exe\",\"files\":{\"Запустить Капри.exe\":{\"bytes\":0,\"sha256\":\"fixture\"},\"data.txt\":{\"bytes\":4000,\"sha256\":\"unchanged\"}}}"); output.Write(payload,0,payload.Length); }
             }
             var archiveBytes=File.ReadAllBytes(zip); var payloads=new Dictionary<string,byte[]>(); var parts=new List<PartInfo>();
             var launcherFile=Path.Combine(Root,"launcher-fixture.bin"); File.WriteAllBytes(launcherFile,launcher);
@@ -81,6 +83,35 @@ namespace CapriReadyDownload {
                 server.DelayMilliseconds=1000;
                 using(var cancel=new CancellationTokenSource(150)) { await ExpectFailure(delegate { return DownloaderCore.Install(spec,Path.Combine(Root,"Mid download cancel"),null,cancel.Token); },"network read cancellation stops"); Check(cancel.IsCancellationRequested,"download cancellation observed"); }
                 Check(!DownloaderCore.AllowedUri(new Uri("https://example.com/payload")),"unknown download host rejected");
+                server.DelayMilliseconds=0;
+                var updatePayload=Encoding.UTF8.GetBytes("NEW APP TEST FIXTURE ONLY — never execute");
+                var updateFile=Path.Combine(Root,"update-fixture.bin"); File.WriteAllBytes(updateFile,updatePayload); payloads["new-app.exe"]=updatePayload;
+                var updateSpec=new BundleSpec { BaseUri=spec.BaseUri,Parts=spec.Parts,ArchiveBytes=spec.ArchiveBytes,ArchiveSha=spec.ArchiveSha,LauncherSha=spec.LauncherSha,
+                    RequiredFreeBytes=1,UnpackedBytes=4050,SafetyBytes=0,UpdateUri=new Uri(server.BaseUri,"new-app.exe"),UpdateBytes=updatePayload.Length,UpdateSha=DownloaderCore.Hash(updateFile,CancellationToken.None),UpdateVersion="0.4.4-companion.9" };
+                int beforeUpdate=server.Requests;
+                var latest=await DownloaderCore.Install(updateSpec,Path.Combine(Root,"Fresh latest version"),null,CancellationToken.None);
+                Check(server.Requests==beforeUpdate+4,"fresh latest installer reuses base archive specification plus one pinned app download");
+                Check(DownloaderCore.Verified(Path.Combine(latest,updateSpec.LauncherName),updatePayload.Length,updateSpec.UpdateSha,CancellationToken.None),"latest application replaced only the fresh staged launcher");
+                Check(File.ReadAllText(Path.Combine(latest,"data.txt"))==new String('Ж',2000),"base bundle voice/data files retained during fresh app swap");
+                var serializer=new JavaScriptSerializer(); var manifest=serializer.Deserialize<Dictionary<string,object>>(File.ReadAllText(Path.Combine(latest,"bundle-manifest.json")));
+                var entries=(Dictionary<string,object>)manifest["files"]; var row=(Dictionary<string,object>)entries[updateSpec.LauncherName]; var dataRow=(Dictionary<string,object>)entries["data.txt"];
+                Check((string)manifest["version"]==updateSpec.UpdateVersion && (string)row["sha256"]==updateSpec.UpdateSha && Convert.ToInt64(row["bytes"])==updatePayload.Length,"fresh updated bundle manifest records version and launcher hash");
+                Check((string)dataRow["sha256"]=="unchanged","other manifest entries preserved");
+                var receipt=serializer.Deserialize<Dictionary<string,object>>(File.ReadAllText(Path.Combine(latest,".capri-update.json")));
+                Check((string)receipt["format"]=="capri-app-update" && (string)receipt["launcherSha256"]==updateSpec.UpdateSha && (string)receipt["baseArchiveSha256"]==spec.ArchiveSha,"updater-compatible receipt retained");
+                Check(DownloaderCore.Installed(latest,updateSpec,CancellationToken.None),"new launcher is accepted as installed");
+                int beforeExisting=server.Requests;
+                await ExpectFailure(delegate { return DownloaderCore.Install(updateSpec,parent,null,CancellationToken.None); },"existing old installation requests the small updater rather than relaunching old app");
+                Check(server.Requests==beforeExisting && File.ReadAllBytes(Path.Combine(final,spec.LauncherName)).Length==launcher.Length,"existing old install was not downloaded or overwritten");
+                var badSpec=new BundleSpec { BaseUri=spec.BaseUri,Parts=spec.Parts,ArchiveBytes=spec.ArchiveBytes,ArchiveSha=spec.ArchiveSha,LauncherSha=spec.LauncherSha,
+                    RequiredFreeBytes=1,UnpackedBytes=4050,SafetyBytes=0,UpdateUri=updateSpec.UpdateUri,UpdateBytes=updatePayload.Length,UpdateSha=new String('0',64),UpdateVersion=updateSpec.UpdateVersion };
+                var rejectedParent=Path.Combine(Root,"Reject mismatched latest app");
+                await ExpectFailure(delegate { return DownloaderCore.Install(badSpec,rejectedParent,null,CancellationToken.None); },"pinned new launcher hash mismatch rejected");
+                Check(!Directory.Exists(DownloaderCore.FinalDirectory(rejectedParent,badSpec)),"bad latest app never becomes a final installation");
+                var rejectedCache=Path.Combine(rejectedParent,".capri-download-"+badSpec.ArchiveSha.Substring(0,12));
+                Check(!Directory.Exists(rejectedCache) || Directory.GetDirectories(rejectedCache,"unpack-*").Length==0,"bad latest app is rejected before expanding the base bundle");
+                server.Dispose();
+                Check(await DownloaderCore.Install(updateSpec,Path.Combine(Root,"Fresh latest version"),null,CancellationToken.None)==latest,"updated installation reopens offline with local server stopped");
             }
             Console.WriteLine("{\"ok\":true,\"checks\":"+checks+",\"localHttpFixture\":true,\"testDirectory\":\""+Root.Replace("\\","\\\\")+"\"}");
         }

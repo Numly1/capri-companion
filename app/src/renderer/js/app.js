@@ -20,6 +20,7 @@ import { CompanionActing } from './companion-acting.js';
 import { CompanionIdle } from './companion-idle.js';
 import { CompanionSS14 } from './companion-ss14.js';
 import { CompanionMinecraft } from './companion-minecraft.js';
+import { CompanionWatching } from './companion-watching.js';
 import { linesFor } from './lines.js';
 import { pick, fmt, reducedMotion } from './util.js';
 
@@ -126,7 +127,9 @@ async function boot() {
   // (only then, so the pointer passing through that corner doesn't call her back).
   // Her mask, asleep: the pointer coming over it stirs her, and a moment of that wakes her up.
   let wakeTimer = 0;
+  let gameInteraction = () => {};
   const comeOut = () => {
+    gameInteraction();
     if (capri.stowed) host.setConfig({ visible: true }); // the tray and Ctrl+Alt+C follow
     capri.unstow();
   };
@@ -140,7 +143,7 @@ async function boot() {
     } else if (!wakeTimer) {
       wakeTimer = setTimeout(() => {
         wakeTimer = 0;
-        if (capri.dormant) capri.wake();
+        if (capri.dormant) { gameInteraction(); capri.wake(); }
       }, 400);
     }
   };
@@ -262,9 +265,18 @@ async function boot() {
   chat.look = look; // "regarde mon écran" in her chat
   // your PC as she feels it (pc.js): the processor, the battery, the network, a USB stick, a game
   const pc = new Pc({ capri, panel, brain, host, voice, chat, guide });
+  gameInteraction = () => pc.interact();
+  window.addEventListener('mousedown', (event) => {
+    if (capri.hit(event.clientX, event.clientY) || onChip()) pc.interact();
+  });
   const companion = new CompanionContext({ capri, panel, brain, host, chat, guide });
   spotifyWidget = new CompanionSpotifyWidget({ capri, host, panel, chat });
   const speech = new CompanionSpeech({ host, panel, chat, brain });
+  const watching = new CompanionWatching({ host, capri, panel, chat, guide, pc });
+  watching.onSay = text => speech.say(text);
+  const reportPresence = () => host.reportPresence?.({ mode: capri.mode, chat: chat.open });
+  reportPresence();
+  setInterval(reportPresence, 15000);
   const extraActing = new CompanionActing({ capri, fx, voice, panel, chat, guide, host });
   extraActing.configure(config);
   speech.configure(config);
@@ -280,13 +292,14 @@ async function boot() {
   chat.onAnswer = (text) => speech.say(text);
   chat.onClose = () => { speech.cancelRecording(); speech.stop(); };
   companion.onSay = (text) => speech.say(text);
-  pc.enabled = config.pcReact !== false;
-  pc.hideInGames = config.hideInGames === true;
   let wantsOut = config.visible !== false; // not put away in your settings (Ctrl+Alt+C, her menu)
   pc.wantsOut = () => wantsOut;
+  pc.configure(config);
+  pc.onRest = () => speech.stop();
 
   // Clicking her: what's going on, or she offers to talk. Sulking, she turns her back on you.
   capri.onClick = () => {
+    pc.interact();
     if (panel.visible) panel.hide();
     else if (!jealousy.onClick()) {
       brain.status();
@@ -539,7 +552,9 @@ async function boot() {
     pc.onWindows(data);
   });
   // the windows as they are now: the watcher only speaks again when something changes
-  host.windowsNow().then((data) => data && capri.setWindows(data));
+  host.windowsNow().then((data) => {
+    if (data) { capri.setWindows(data); pc.onWindows(data); }
+  });
 
   // her window resized, or moved to another screen (whose pixels may be another size)
   let dpr = window.devicePixelRatio;
@@ -563,7 +578,9 @@ async function boot() {
     screens = await host.screens().catch(() => screens);
   };
   // the screen right past one side of hers (-1 left, 1 right), at height y of her window, if any
+  let screenPinned = config.follow === false;
   const beyond = (side, y) => {
+    if (screenPinned) return null;
     const here = screens?.list.find((d) => d.id === screens.current);
     if (!here) return null;
     const gy = screens.origin.y + y;
@@ -573,7 +590,7 @@ async function boot() {
   const moveTo = async (id) => {
     const res = await host.moveScreen(id);
     if (!res) return null;
-    screens = { ...screens, current: id, origin: res.origin };
+    screens = { ...screens, current: res.current ?? id, origin: res.origin };
     applySize(res);
     return res;
   };
@@ -585,7 +602,7 @@ async function boot() {
     const res = await moveTo(there.id);
     return res && { y: gy - res.origin.y };
   };
-  capri.onScreenOf = (cursor) => capri.jumpScreen(async () => {
+  capri.onScreenOf = (cursor) => screenPinned ? null : capri.jumpScreen(async () => {
     await moveTo(cursor.display);
     return host.cursor();
   }, { toPointer: true });
@@ -627,10 +644,10 @@ async function boot() {
     voice.configure(cfg);
     jealousy.enabled = cfg.jealous !== false;
     followOn = cfg.follow !== false;
+    screenPinned = cfg.follow === false;
     look.configure(cfg);
-    pc.enabled = cfg.pcReact !== false;
-    pc.hideInGames = cfg.hideInGames === true;
     wantsOut = cfg.visible !== false;
+    pc.configure(cfg);
     reminders.sync(cfg.reminders); // one may have been cancelled from her menu
     capri.wander = cfg.wander;
     capri.possessWindows = cfg.possess;
@@ -660,8 +677,49 @@ async function boot() {
   });
 
   host.onCommand(async (cmd) => {
+    if (cmd.name !== 'stow') pc.interact();
     const t = brain.t;
     switch (cmd.name) {
+      case 'discordSetup':
+        await guide.scene(async () => {
+          let error = '';
+          for (;;) {
+            const got = await guide.askText({ face: 'look', line: 'Подключим мой статус в Discord.',
+              quote: error || 'Открой портал Discord → New Application → назови Capri Companion → скопируй Application ID из General Information. Это публичный номер приложения.',
+              placeholder: 'Application ID · 17–20 цифр', tag: 'DISCORD', note: 'Токен, пароль и Client Secret сюда не нужны.',
+              actions: [{ id: 'portal', label: 'Открыть портал' }],
+              onAction: id => id === 'portal' && (host.discordPortal(), true),
+            });
+            if (!got?.text) break;
+            const id = got.text.trim();
+            if (!/^\d{17,20}$/.test(id)) { error = 'Нужен Application ID из 17–20 цифр. Проверь, что скопирован именно он.'; continue; }
+            await host.setConfig({ discordClientId: id, discordPresence: true });
+            await guide.ask({ face: 'smug', line: 'Номер сохранён. Открой приложение Discord на компьютере.',
+              quote: 'Статус обновляется примерно раз в 15 секунд. В настройках Discord должно быть разрешено отображение активности. Передача названия игры и просмотра отключается отдельно в моём меню.',
+              actions: [{ id: 'ok', label: 'Готово', primary: true }] });
+            break;
+          }
+        });
+        break;
+      case 'discordStatus': {
+        const status = await host.discordStatus();
+        const descriptions = { off: 'Статус Discord выключен.', 'needs-id': 'Сначала укажи Application ID в моём меню Discord.',
+          connecting: 'Пробую подключиться к приложению Discord.', 'not-running': 'Discord пока недоступен. Открой его настольное приложение — попробую снова.',
+          connected: 'Discord подключён. Передаю статус.', active: 'Discord подтвердил мой статус. Если его не видно, проверь отображение активности в Discord.',
+          rejected: 'Discord отклонил активность. Проверь Application ID и настройки отображения активности.' };
+        panel.hide(); panel.say({ kind: 'info', line: descriptions[status.state] || 'Подключение пока не готово.', hold: 10000 });
+        break;
+      }
+      case 'ss14Cheer':
+      case 'ss14Break':
+      case 'ss14Erp': {
+        const line = cmd.name === 'ss14Erp' ? 'ЕРП на станции? Осуждаю, чум. Лучше спасай смену — тут и без этого хватает цирка.'
+          : cmd.name === 'ss14Break' ? 'Смена подождёт минутку, чум. Если есть безопасный момент — глоток воды, расправь плечи и выдохни. Я прикрою морально.'
+          : 'Чум, даже самая дикая смена заканчивается. Ты справляешься. Держись своих, не теряй голову — твоя неоновая поддержка на месте.';
+        panel.hide(); capri.wake();
+        if (panel.say({ kind: 'info', badge: 'SS14', face: 'smug', line, hold: 10000 }) !== false) speech.say(line);
+        break;
+      }
       case 'teleport':
         capri.teleport(capri.spot('random'));
         break;

@@ -1,6 +1,6 @@
 {
   "name": "capri-companion-local",
-  "version": "0.4.4-companion.8",
+  "version": "0.4.4-companion.9",
   "description": "Personal desktop companion based on Capri Desktop by mochiiwuff, with local replies and optional AI.",
   "author": "mochiiwuff",
   "repository": "github:mochiiwuff/capri-desktop",

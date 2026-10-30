@@ -105,7 +105,7 @@ export class CompanionSpotifyWidget {
 
   render() {
     const hidden = this.disposed || this.cfg.spotifyWidget === false || this.cfg.companionContext === false ||
-      !this.music || this.capri.hidden || this.capri.stowed || this.capri.dormant || this.capri.dragging ||
+      !this.music || this.capri.hidden || this.capri.stowed || this.capri.dormant || this.capri.mode === 'sleep' || this.capri.dragging ||
       this.panel?.visible || this.chat?.open;
     this.el.hidden = Boolean(hidden);
     if (hidden) return;

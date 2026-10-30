@@ -199,20 +199,22 @@ function getConversationContext() { return conversationContext(getContext()); }
 
 function stop() { running?.stop(); running = null; activeConfig = () => ({ companionContext: false }); }
 
-function start(send, cfgGetter = () => ({})) {
+function start(send, cfgGetter = () => ({}), options = {}) {
   stop();
   const tracker = new ContextTracker();
   const script = path.join(__dirname, 'companion-media.ps1').replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
-  let child = null, lines = null, stopped = false, failures = 0, restartAt = 0;
+  let child = null, lines = null, stopped = false, failures = 0, restartAt = 0, collectingWatching = false;
   const intentionalStops = new WeakSet();
   const config = () => { try { return cfgGetter() || {}; } catch { return { companionContext: false }; } };
   activeConfig = config;
   const publish = (event) => { latest = event.state; try { send(event); } catch {} };
+  const needsWatching = cfg => ['auto', 'manual'].includes(cfg.watchMode) || (cfg.discordPresence === true && cfg.discordShareActivity === true);
   function supervise() {
     const cfg = config();
     const flags = enabledIntegrations(cfg);
     if (stopped) return;
-    if ((!flags.spotifyMetadata && !flags.krita) || process.platform !== 'win32') {
+    const watching = needsWatching(cfg);
+    if ((!flags.spotifyMetadata && !flags.krita && !watching) || process.platform !== 'win32') {
       if (child) { intentionalStops.add(child); child.kill(); }
       child = null; lines?.close(); lines = null;
       failures = 0; restartAt = 0;
@@ -229,18 +231,23 @@ function start(send, cfgGetter = () => ({})) {
         latest.spotifyEnabled !== flags.spotify || latest.spotifyWidgetEnabled !== flags.spotifyWidget || latest.kritaEnabled !== flags.krita) {
       publish({ state: getContext(), reaction: null });
     }
+    if (child && collectingWatching !== watching) {
+      intentionalStops.add(child); child.kill(); child = null; lines?.close(); lines = null;
+    }
     if (child || failures >= 3 || Date.now() < restartAt) return;
-    const processRef = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-ParentPid', String(process.pid)], {
+    collectingWatching = watching;
+    const processRef = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-ParentPid', String(process.pid), ...(watching ? ['-WatchMedia'] : [])], {
       windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     });
     child = processRef;
     lines = readline.createInterface({ input: processRef.stdout });
     lines.on('line', (line) => {
       const flags = enabledIntegrations(config());
-      if (line.length > MAX_MEDIA_LINE || stopped || (!flags.spotifyMetadata && !flags.krita)) return;
+      if (line.length > MAX_MEDIA_LINE || stopped || (!flags.spotifyMetadata && !flags.krita && !needsWatching(config()))) return;
       let raw;
       try { raw = JSON.parse(line.replace(/^\uFEFF/, '')); } catch { return; }
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+      if (options.onSnapshot) { try { options.onSnapshot(raw); } catch {} }
       publish(tracker.sample(raw, config()));
     });
     // Helper diagnostics can contain OS data. Consume them, never forward/log them.

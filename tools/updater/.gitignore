@@ -1,0 +1,4 @@
+*.exe
+*.log
+BuildInfo.generated.cs
+*-result.json

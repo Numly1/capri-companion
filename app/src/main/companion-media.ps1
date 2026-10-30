@@ -1,6 +1,6 @@
-# Read-only, local foreground classification and Spotify session metadata.
+﻿# Read-only, local foreground classification and Spotify session metadata.
 # Emits strict JSON every ten seconds. Never controls playback or reads window/document contents.
-param([int]$ParentPid = 0, [switch]$Once)
+param([int]$ParentPid = 0, [switch]$Once, [switch]$WatchMedia)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 
@@ -158,6 +158,26 @@ function Get-Spotify {
   return $null
 }
 
+function Get-Watching {
+  $foreground = [CapriCompanionForeground]::Read()
+  if ($foreground[0] -notmatch '^(chrome|msedge|firefox|brave|opera|vivaldi|browser)$' -or $foreground[1] -notmatch '(?i)кинопоиск|kinopoisk') { return $null }
+  $caption = $foreground[1] -replace '(?i)\s*[-–—|]\s*(?:Яндекс Браузер|Google Chrome|Microsoft Edge|Mozilla Firefox|Brave|Opera|Vivaldi).*$',''
+  $caption = ($caption -replace '(?i)\s*[-–—|:]?\s*(?:Кинопоиск|Kinopoisk).*$','').Trim()
+  if ($script:manager) {
+    foreach ($session in $script:manager.GetSessions()) {
+      if ($session.SourceAppUserModelId -notmatch '(?i)chrome|msedge|firefox|brave|opera|vivaldi|yandex|(?:^|[\\/.])browser(?:[\\/.]|$)') { continue }
+      $properties = Wait-WinRt ($session.TryGetMediaPropertiesAsync()) $script:mediaType
+      if (-not $properties -or [string]::IsNullOrWhiteSpace($properties.Title)) { continue }
+      $title = [string]$properties.Title
+      # Match the foreground page; another tab's media must not be attributed to Kinopoisk.
+      if ($caption.Length -lt 3 -or ($title.IndexOf($caption,[StringComparison]::OrdinalIgnoreCase) -lt 0 -and $caption.IndexOf($title,[StringComparison]::OrdinalIgnoreCase) -lt 0)) { continue }
+      return @{ service='Кинопоиск';title=$title.Substring(0,[Math]::Min(140,$title.Length));playing=($session.GetPlaybackInfo().PlaybackStatus.ToString() -eq 'Playing');source='gsmtc' }
+    }
+  }
+  if ($caption) { return @{ service='Кинопоиск';title=$caption.Substring(0,[Math]::Min(140,$caption.Length));playing=$null;source='window-title' } }
+  return $null
+}
+
 do {
   if ($ParentPid -and -not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) { break }
   $app = $null
@@ -165,6 +185,7 @@ do {
   try { $app = Get-DrawingApp } catch {}
   try { $music = Get-Spotify } catch {}
   $snapshot = @{ drawingApp=$app; music=$music; mediaAvailable=($null -ne $script:manager) }
+  if ($WatchMedia) { try { $snapshot.watching = Get-Watching } catch { $snapshot.watching=$null } }
   [Console]::Out.WriteLine(($snapshot | ConvertTo-Json -Depth 5 -Compress))
   [Console]::Out.Flush()
   if (-not $Once) { Start-Sleep -Seconds 10 }

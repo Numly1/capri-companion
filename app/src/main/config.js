@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { app } = require('electron');
 const { initializeReadyGift } = require('./companion-ready-gift');
+const { GAME_DEFAULTS, normalizeGameSettings } = require('./companion-game-settings');
 
 const DEFAULTS = {
   scale: 0.6,        // sprite scale, 0.6 ≈ 250px tall
@@ -29,6 +30,7 @@ const DEFAULTS = {
   ss14Reactions: true,
   ss14IntervalMinutes: 3,
   ss14Server: 'Arcane Nirvana',
+  ss14ErpReaction: true,
   minecraftReactions: true,
   minecraftIntervalMinutes: 2,
   minecraftLogPath: '',
@@ -63,6 +65,12 @@ const DEFAULTS = {
   bond: null,        // how close she is to you: { xp, first, last, days, streak, caps } (bond.js)
   pcReact: true,     // she reacts to your PC: the processor at full tilt, the battery, the network, a USB stick, a game (pc.js)
   hideInGames: false,
+  ...GAME_DEFAULTS,
+  watchMode: 'auto', // playback must be confirmed; manual mode is an explicit user choice
+  watchIntervalMinutes: 12,
+  discordPresence: false,
+  discordClientId: '',
+  discordShareActivity: true,
   watchScreen: false, // she looks at your screen now and then and says something about it (look.js)
   lookAsked: false,  // she told you what looking means (where the picture goes) and you said yes
 };
@@ -76,7 +84,8 @@ function file() {
 function load(fresh = false) {
   if (cache && !fresh) return cache;
   try {
-    cache = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(file(), 'utf8')) };
+    const stored = JSON.parse(fs.readFileSync(file(), 'utf8'));
+    cache = { ...DEFAULTS, ...stored, ...normalizeGameSettings(stored) };
   } catch {
     cache = { ...DEFAULTS };
   }
@@ -92,7 +101,11 @@ function load(fresh = false) {
 }
 
 function save(patch) {
+  if (typeof patch.hideInGames === 'boolean' && !('gameBehavior' in patch)) {
+    patch = { ...patch, gameBehavior: patch.hideInGames ? 'hide' : 'stay' };
+  }
   cache = { ...load(), ...patch };
+  Object.assign(cache, normalizeGameSettings(cache));
   try {
     fs.mkdirSync(path.dirname(file()), { recursive: true });
     fs.writeFileSync(file(), JSON.stringify(cache, null, 2));

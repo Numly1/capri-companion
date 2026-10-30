@@ -227,6 +227,8 @@ test('renderer skips busy/visible/chat/guide opportunities with no deferred repl
   chat.open = true; assert.equal(context.onSnapshot(event(2)), false);
   chat.open = false; guide.running = true; assert.equal(context.onSnapshot(event(3)), false);
   guide.running = false; capri.free = false; assert.equal(context.onSnapshot(event(4)), false);
+  capri.free = true; capri.mode = 'sleep'; assert.equal(context.onSnapshot(event('sleep')), false);
+  capri.mode = 'idle'; assert.equal(context.onSnapshot(event('sleep')), false, 'sleep-time reactions are discarded');
   capri.free = true; assert.equal(context.onSnapshot(event(5)), true);
   assert.equal(said.length, 1); assert.deepEqual(acted, ['curious']);
   assert.deepEqual(spoken, ['Only actual metadata']);

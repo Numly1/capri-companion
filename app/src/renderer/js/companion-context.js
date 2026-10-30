@@ -26,7 +26,7 @@ export class CompanionContext {
     this.lastReaction = reaction.id;
     if (reaction.kind === 'music' && (!this.spotifyEnabled || event.state?.spotifyEnabled === false)) return false;
     if (reaction.kind === 'drawing' && (!this.kritaEnabled || event.state?.kritaEnabled === false)) return false;
-    if (!this.enabled || !event.state?.enabled || !this.capri.free || this.capri.mode === 'alert' ||
+    if (!this.enabled || !event.state?.enabled || !this.capri.free || ['alert', 'sleep'].includes(this.capri.mode) ||
         this.panel.visible || this.chat?.open || this.guide?.running) return false;
     if (typeof reaction.line !== 'string' || reaction.line.length > 700) return false;
     const face = ['smug', 'laugh', 'look', 'calm'].includes(reaction.face) ? reaction.face : 'smug';

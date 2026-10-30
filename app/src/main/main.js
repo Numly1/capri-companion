@@ -28,7 +28,10 @@ const companionVoiceRuntime = require('./companion-voice-runtime');
 const { installReference } = require('./companion-voice-clips');
 const companionSS14 = require('./companion-ss14');
 const companionMinecraft = require('./companion-minecraft');
+const companionDiscord = require('./companion-discord');
+const { WatchingTracker, sanitizeWatching } = require('./companion-watching');
 const { chooseVisionModel } = require('./companion-model-choice');
+const companionDisplays = require('./companion-displays');
 const { replyInstruction, buildScreenMessages, ensureScreenLanguage } = require('./companion-language');
 const { ASSISTANTS, assistant } = require('./assistants');
 const activeAssistant = () => assistant(config.load().assistant); // Claude Code or Codex
@@ -39,6 +42,10 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const referenceRuntimes = new Map();
 let ss14Service = null;
 let minecraftService = null;
+let discordService = null;
+let latestWatching = null;
+let latestWatchingAt = 0;
+let presencePet = { mode: 'idle', chat: false };
 const SELF_TEST = process.argv.includes('--companion-self-test') && Boolean(process.env.CAPRI_SELF_TEST_DIR);
 // Keep this personal adaptation's settings separate from the original Capri app.
 const companionData = SELF_TEST ? path.join(path.resolve(process.env.CAPRI_SELF_TEST_DIR), 'userdata') : path.join(app.getPath('appData'), 'CapriCompanion');
@@ -127,15 +134,26 @@ function displayAt(p) {
 
 function targetDisplay() {
   const { displayId } = config.load();
-  const all = displays();
-  return all.find((d) => d.id === displayId) || all.find((d) => d.id === screen.getPrimaryDisplay().id) || all[0];
+  return companionDisplays.resolveDisplay(displays(), screen.getPrimaryDisplay().id, displayId);
+}
+
+function pinDisplay(id) {
+  const patch = companionDisplays.pinPatch(displays(), id);
+  if (!patch) return;
+  updateConfig(patch);
+  fitOverlay();
+  windowWatch?.refresh();
+  sendCommand('screens');
 }
 
 // Her window over to another screen (she's on her way there, screens.js). Set twice: going to a
 // screen with another scale, Windows resizes the window once it lands there.
 function moveOverlay(id) {
-  if (!displays().some((d) => d.id === id)) return null;
-  config.save({ displayId: id });
+  const cfg = config.load();
+  if (!companionDisplays.mayMove(cfg, displays(), screen.getPrimaryDisplay().id, id)) return null;
+  // A pinned monitor may be disconnected: moving on its temporary fallback must
+  // not overwrite the preferred ID, or reconnecting it could not restore the pin.
+  if (cfg.follow !== false) config.save({ displayId: id });
   fitOverlay();
   const { area } = overlayArea();
   overlay.setBounds(area);
@@ -303,7 +321,14 @@ function rendererConfig() {
 }
 
 function updateConfig(patch) {
+  if ('discordClientId' in patch && !companionDiscord.validId(patch.discordClientId)) patch = { ...patch, discordClientId: '' };
   config.save(patch);
+  // Sharing must resume from a new helper sample, never from an earlier private session.
+  if ('discordShareActivity' in patch || 'discordPresence' in patch) {
+    latestWatching = null;
+    latestWatchingAt = 0;
+  }
+  discordService?.tick().catch(() => {});
   if ('voiceStyle' in patch || 'companionVoice' in patch || 'muted' in patch) {
     const voiceConfig = config.load();
     for (const [profile, runtime] of referenceRuntimes) {
@@ -394,16 +419,21 @@ function rebuildTray() {
     },
     {
       label: t.screen,
-      enabled: screens.length > 1,
       submenu: [
-        ...screens.map((d, i) => ({
-          label: `${i + 1} — ${d.size.width}×${d.size.height}`,
-          type: 'radio',
-          checked: d.id === current,
-          click: () => d.id !== current && sendCommand('goScreen', { id: d.id }), // she goes over there herself
-        })),
+        { label: 'Закрепить на текущем экране', type: 'checkbox', checked: cfg.follow === false,
+          click: (item) => item.checked ? pinDisplay(current) : updateConfig({ follow: true }) },
         { type: 'separator' },
-        { label: t.follow, type: 'checkbox', checked: cfg.follow !== false, click: (item) => updateConfig({ follow: item.checked }) },
+        ...screens.map((d, i) => ({
+          label: `Закрепить: ${i + 1}${d.label ? ` · ${d.label}` : ''} — ${d.size.width}×${d.size.height}`,
+          type: 'radio',
+          checked: cfg.follow === false && d.id === cfg.displayId,
+          click: () => pinDisplay(d.id),
+        })),
+        ...(cfg.follow === false && cfg.displayId != null && !screens.some(d => d.id === cfg.displayId)
+          ? [{ label: 'Закреплённый экран отключён · временно на основном', enabled: false }] : []),
+        { type: 'separator' },
+        { label: 'Следовать за курсором между экранами', type: 'checkbox', checked: cfg.follow !== false,
+          click: (item) => item.checked ? updateConfig({ follow: true }) : pinDisplay(current) },
       ],
     },
     {
@@ -448,7 +478,37 @@ function rebuildTray() {
     { label: t.possess, type: 'checkbox', checked: cfg.possess, click: (item) => updateConfig({ possess: item.checked }) },
     { label: t.jealous, type: 'checkbox', checked: cfg.jealous !== false, click: (item) => updateConfig({ jealous: item.checked }) },
     { label: t.pcReact, type: 'checkbox', checked: cfg.pcReact !== false, click: (item) => updateConfig({ pcReact: item.checked }) },
-    { label: 'Прятаться во время игр', type: 'checkbox', checked: cfg.hideInGames === true, click: item => updateConfig({ hideInGames: item.checked }) },
+    { label: 'Во время игры', submenu: [
+      ...[['stay', 'Оставаться рядом'], ['sleep', 'Спать на экране'], ['hide', 'Прятаться']].map(([gameBehavior, label]) => ({
+        label, type: 'radio', checked: cfg.gameBehavior === gameBehavior, click: () => updateConfig({ gameBehavior }),
+      })),
+      { type: 'separator' },
+      { label: 'Через сколько засыпать / прятаться', submenu: [15, 30, 60, 120, 300].map(gameDelaySeconds => ({
+        label: gameDelaySeconds < 60 ? `${gameDelaySeconds} секунд` : `${gameDelaySeconds / 60} мин`,
+        type: 'radio', checked: cfg.gameDelaySeconds === gameDelaySeconds, click: () => updateConfig({ gameDelaySeconds }),
+      })) },
+      { label: 'Для каких игр', submenu: [['all', 'Все распознанные игры'], ['minecraft', 'Только Minecraft'], ['ss14', 'Только Space Station 14']].map(([gameScope, label]) => ({
+        label, type: 'radio', checked: cfg.gameScope === gameScope, click: () => updateConfig({ gameScope }),
+      })) },
+      { type: 'separator' },
+      { label: 'Вернётся сама, когда переключишься из игры', enabled: false },
+    ] },
+    { label: 'Discord Rich Presence', submenu: [
+      { label: 'Показывать Капри в Discord', type: 'checkbox', checked: cfg.discordPresence === true,
+        click: item => { updateConfig({ discordPresence: item.checked }); if (item.checked && !companionDiscord.validId(cfg.discordClientId)) sendCommand('discordSetup'); } },
+      { label: 'Показывать игру и название просмотра', type: 'checkbox', checked: cfg.discordShareActivity === true, click: item => updateConfig({ discordShareActivity: item.checked }) },
+      { label: 'Настроить Application ID…', click: () => sendCommand('discordSetup') },
+      { label: 'Проверить подключение', click: () => sendCommand('discordStatus') },
+    ] },
+    { label: 'Смотрим вместе · Кинопоиск', submenu: [
+      ...[['off', 'Без комментариев'], ['auto', 'Автоматически при воспроизведении'], ['manual', 'Считай, что я смотрю · вручную']].map(([watchMode, label]) => ({
+        label, type: 'radio', checked: cfg.watchMode === watchMode, click: () => updateConfig({ watchMode }),
+      })),
+      { type: 'separator' },
+      ...[5, 12, 20, 30].map(watchIntervalMinutes => ({ label: 'Пауза ' + watchIntervalMinutes + ' мин', type: 'radio',
+        checked: cfg.watchIntervalMinutes === watchIntervalMinutes, click: () => updateConfig({ watchIntervalMinutes }) })),
+      { label: 'Реплики без спойлеров · без отправки кадров', enabled: false },
+    ] },
     { label: 'Spotify', submenu: [
       { label: 'Показывать трек и обложку', type: 'checkbox', checked: cfg.spotifyWidget !== false, click: (item) => updateConfig({ spotifyWidget: item.checked, ...(item.checked && { companionContext: true }) }) },
       { label: 'Реагировать на музыку', type: 'checkbox', checked: cfg.spotifyReactions !== false, click: (item) => updateConfig({ spotifyReactions: item.checked, ...(item.checked && { companionContext: true }) }) },
@@ -469,6 +529,10 @@ function rebuildTray() {
     { label: 'SS14 · Arcane Nirvana', submenu: [
       { label: 'Реагировать на видимые объявления', type: 'checkbox', checked: cfg.ss14Reactions === true, click: item => updateConfig({ ss14Reactions: item.checked }) },
       { label: 'Статус интеграции', click: () => sendCommand('ss14Status') },
+      { label: 'Подбодри меня', click: () => sendCommand('ss14Cheer') },
+      { label: 'Передышка между сменами', click: () => sendCommand('ss14Break') },
+      { label: 'Капри, осуди ЕРП', click: () => sendCommand('ss14Erp') },
+      { label: 'Реплика при упоминании ЕРП', type: 'checkbox', checked: cfg.ss14ErpReaction !== false, click: item => updateConfig({ ss14ErpReaction: item.checked }) },
       { type: 'separator' },
       ...[1, 3, 5, 10].map(minutes => ({ label: `Пауза ${minutes} мин`, type: 'radio', checked: (cfg.ss14IntervalMinutes || 3) === minutes, click: () => updateConfig({ ss14IntervalMinutes: minutes }) })),
     ] },
@@ -803,9 +867,11 @@ function registerIpc() {
     const area = moveOverlay(id);
     if (!area) return null;
     await new Promise((r) => setTimeout(r, 60));
-    overlay.setBounds(area); // again, once Windows has settled it on its new screen
+    // A pin or hot-plug can change while Windows settles the move. Use the
+    // current destination, so an older follow request cannot undo that choice.
+    overlay.setBounds(overlayArea().area);
     const o = overlay.getBounds();
-    return { origin: { x: o.x, y: o.y }, width: o.width, height: o.height, gap: overlayArea().gap };
+    return { current: targetDisplay().id, origin: { x: o.x, y: o.y }, width: o.width, height: o.height, gap: overlayArea().gap };
   });
   ipcMain.handle('config:get', () => rendererConfig());
   ipcMain.handle('hooks:status', () => activeHooks().status());
@@ -818,6 +884,11 @@ function registerIpc() {
   ipcMain.handle('claude:found', () => fs.existsSync(path.dirname(activeHooks().status().file))); // Claude Code keeps its settings there
   ipcMain.on('claude:help', () => shell.openExternal(activeAssistant().help));
   ipcMain.handle('windows:get', () => lastWindows);
+  ipcMain.on('companion:presence', (_event, value) => {
+    presencePet = { mode: value?.mode === 'sleep' ? 'sleep' : 'idle', chat: value?.chat === true };
+  });
+  ipcMain.handle('companion:discord-status', () => discordService?.getState() || { state: 'off' });
+  ipcMain.on('companion:discord-portal', () => shell.openExternal('https://discord.com/developers/applications'));
   // talking to her (chat.js): is Ollama there, with a model to talk with
   ipcMain.handle('chat:status', async () => {
     const cfg = config.load(true); // keys may have been edited by hand
@@ -1183,7 +1254,22 @@ function main() {
     registerIpc();
     createOverlay();
     createTray();
-    companionContext.start((snapshot) => overlay?.webContents.send('companion:context', snapshot), () => config.load());
+    const watchingTracker = new WatchingTracker();
+    companionContext.start((snapshot) => overlay?.webContents.send('companion:context', snapshot), () => config.load(), {
+      onSnapshot: raw => {
+        const cfg = config.load();
+        const event = watchingTracker.sample(raw.watching, cfg);
+        latestWatching = event.state.watching || sanitizeWatching(raw.watching);
+        latestWatchingAt = Date.now();
+        overlay?.webContents.send('companion:watching', event);
+      },
+    });
+    discordService = companionDiscord.create({ getConfig: () => config.load(),
+      getContext: () => {
+        const age = Date.now() - latestWatchingAt;
+        return { pet: presencePet, game: lastWindows?.game,
+          watching: latestWatchingAt > 0 && age >= 0 && age <= 25000 ? latestWatching : null };
+      } });
     ss14Service = companionSS14.start(snapshot => overlay?.webContents.send('companion:ss14', snapshot), () => config.load(), {
       getForeground: () => lastWindows?.ss14,
       canInspect: () => config.load().visible !== false && !overlay?.isFocused(),
@@ -1231,6 +1317,7 @@ function main() {
     companionContext.stop();
     ss14Service?.stop();
     minecraftService?.stop();
+    discordService?.stop();
     for (const runtime of referenceRuntimes.values()) runtime.stop();
   });
   app.on('window-all-closed', (e) => e.preventDefault());

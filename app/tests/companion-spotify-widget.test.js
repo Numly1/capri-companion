@@ -100,6 +100,10 @@ test('card avoids conversation and hidden pet, participates in hit testing, and 
     assert.equal(f.widget.el.hidden, true); assert.equal(f.widget.containsPoint(50, 60), false);
     object[name] = false; f.listeners.tick(); assert.equal(f.widget.el.hidden, false);
   }
+  f.capri.mode = 'sleep'; f.listeners.tick();
+  assert.equal(f.widget.el.hidden, true, 'sleep hides the card before the mask-only doze starts');
+  assert.equal(f.widget.containsPoint(50, 60), false);
+  f.capri.mode = 'idle'; f.listeners.tick(); assert.equal(f.widget.el.hidden, false);
   let stopped = false;
   const close = f.widget.el.children.find(el => el.tag === 'button');
   close.events.click[0]({ stopPropagation: () => { stopped = true; } });

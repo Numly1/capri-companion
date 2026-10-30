@@ -29,7 +29,7 @@ namespace CapriReadyDownload {
             try { Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             Font=new Font("Segoe UI",9F); BackColor=Color.FromArgb(20,14,32); ForeColor=Color.FromArgb(246,240,250);
             var heading=new Label { Text="Капри уже ждёт тебя",Font=new Font("Segoe UI",18F,FontStyle.Bold),AutoSize=true,Location=new Point(24,20) };
-            var intro=new Label { Text="Сейчас я скачаю приложение и готовый голос. Ничего устанавливать вручную не нужно.\nИнтернет нужен только для первой загрузки — около 4,2 ГБ.",Location=new Point(26,65),Size=new Size(500,48) };
+            var intro=new Label { Text="Скачаю готовый голос и последнюю версию приложения.\nПервое скачивание — около "+(BuildInfo.Bundle.UpdateUri!=null?"4,3":"4,2")+" ГБ. Уже есть Капри? Нужен Capri-Update.exe.",Location=new Point(26,65),Size=new Size(500,48) };
             pathLabel.Location=new Point(26,121); pathLabel.Size=new Size(375,34); pathLabel.AutoEllipsis=true;
             choose.Text="Другая папка…"; choose.Location=new Point(407,120); choose.Size=new Size(117,30);
             status.Location=new Point(26,167); status.Size=new Size(498,46); status.Text="Подготовка…";

@@ -30,7 +30,9 @@ export class Pc {
   constructor({ capri, panel, brain, host, voice, chat, guide }) {
     Object.assign(this, { capri, panel, brain, host, voice, chat, guide });
     this.enabled = true;
-    this.hideInGames = false;
+    this.gameBehavior = 'stay';
+    this.gameDelaySeconds = 30;
+    this.gameScope = 'all';
     this.wantsOut = () => true; // not put away in her settings
     this.hotSince = 0;
     this.hot = false;
@@ -56,7 +58,52 @@ export class Pc {
 
   // not in the middle of something that matters more
   get quiet() {
-    return this.enabled && this.capri.mode !== 'alert' && !this.chat.open && !this.guide.running;
+    return this.enabled && !['alert', 'sleep'].includes(this.capri.mode) && !this.capri.dormant
+      && !this.capri.stowed && !this.chat.open && !this.guide.running;
+  }
+
+  configure(cfg = {}) {
+    this.enabled = cfg.pcReact !== false;
+    const behavior = ['stay', 'sleep', 'hide'].includes(cfg.gameBehavior)
+      ? cfg.gameBehavior : cfg.hideInGames === true ? 'hide' : 'stay';
+    const seconds = Number(cfg.gameDelaySeconds);
+    const delay = Number.isFinite(seconds) ? Math.max(5, Math.min(300, seconds)) : 30;
+    const scope = ['all', 'minecraft', 'ss14'].includes(cfg.gameScope) ? cfg.gameScope : 'all';
+    if (behavior !== this.gameBehavior || delay !== this.gameDelaySeconds || scope !== this.gameScope) {
+      this.releaseGame(this.game);
+      if (this.game) { this.game.since = Date.now(); this.game.said = false; }
+    }
+    this.gameBehavior = behavior;
+    this.gameDelaySeconds = delay;
+    this.gameScope = scope;
+    if (!this.wantsOut()) this.releaseGame(this.game);
+  }
+
+  behaviorFor(game) {
+    if (this.gameScope === 'minecraft' && !/minecraft/i.test(game.name)) return 'stay';
+    if (this.gameScope === 'ss14' && !/space station 14|ss14/i.test(game.name)) return 'stay';
+    return this.gameBehavior || 'stay';
+  }
+
+  // A real click or explicit command gives her a minute to help before resting again.
+  interact() {
+    if (!this.game) return;
+    this.game.overrideUntil = Date.now() + 60000;
+    this.releaseGame(this.game);
+  }
+
+  // Only undo a rest this scheduler started. A manually hidden/asleep character is left alone.
+  releaseGame(game, greet = false) {
+    if (!game) return;
+    const slept = game.sleeping; const hidden = game.put;
+    game.sleeping = false; game.put = false;
+    if (!this.wantsOut()) return;
+    if (slept && !this.capri.stowed && (this.capri.mode === 'sleep' || this.capri.dormant)) this.capri.wake();
+    if (hidden && (this.capri.stowed || this.capri.stowing)) {
+      Promise.resolve(this.capri.unstow()).then(() => {
+        if (greet) this.say(pick(this.t.gameBack), 'look', 5000);
+      });
+    }
   }
 
   say(line, face = 'smug', hold = 4500) {
@@ -102,7 +149,7 @@ export class Pc {
   }
 
   async battery({ level, charging }) {
-    if (!this.enabled) return;
+    if (!this.quiet) return;
     const now = Date.now();
     if (charging !== this.charging) {
       this.charging = charging;
@@ -130,7 +177,7 @@ export class Pc {
     clearTimeout(this.offlineTimer);
     // a blip isn't worth it
     this.offlineTimer = setTimeout(() => {
-      if (navigator.onLine || !this.enabled) return;
+      if (navigator.onLine || !this.quiet) return;
       this.cutOff = true;
       this.voice.play('error');
       this.say(pick(this.t.offline), 'wide', 5000);
@@ -142,6 +189,7 @@ export class Pc {
     clearTimeout(this.offlineTimer);
     if (!this.cutOff) return;
     this.cutOff = false;
+    if (!this.quiet) return;
     this.voice.play('hello');
     this.say(pick(this.t.online), 'laugh', 3500);
     if (this.capri.free) this.capri.perform('hop');
@@ -149,12 +197,7 @@ export class Pc {
 
   // what windows.ps1 sees: USB sticks by letter, devices plugged in or out, the game in front
   onWindows({ usb = [], plug = null, game = null }) {
-    if (!this.enabled) {
-      this.drives = usb;
-      this.plugs = plug?.n ?? 0;
-      return;
-    }
-    if (this.drives) {
+    if (this.enabled && this.drives) {
       const added = usb.find((d) => !this.drives.includes(d));
       const removed = this.drives.find((d) => !usb.includes(d));
       if (added) this.stick(added);
@@ -162,13 +205,16 @@ export class Pc {
     }
     this.drives = usb;
 
-    if (this.plugs !== null && plug && plug.n !== this.plugs) this.device(plug);
+    if (this.enabled && this.plugs !== null && plug && plug.n !== this.plugs) this.device(plug);
     this.plugs = plug?.n ?? 0;
 
     const g = this.game;
     if (game) {
       if (g?.name === game) g.gone = 0;
-      else this.game = { name: game, since: Date.now(), gone: 0, said: false, put: false };
+      else {
+        this.releaseGame(g);
+        this.game = { name: game, since: Date.now(), gone: 0, said: false, put: false, sleeping: false, overrideUntil: 0 };
+      }
     } else if (g && !g.gone) {
       g.gone = Date.now();
     }
@@ -176,6 +222,7 @@ export class Pc {
 
   // a USB stick: she dives into it to have a look
   async stick(drive) {
+    if (!this.quiet) return;
     this.capri.wake();
     this.say(fmt(pick(this.t.usb), { drive }), 'look', 2500);
     if (!this.quiet || !(await this.whenFree())) return;
@@ -185,6 +232,7 @@ export class Pc {
 
   // anything else plugged in or out: a phone, a controller, a headset...
   device(plug) {
+    if (!this.quiet) return;
     const kind = kindOf(plug);
     if (kind === 'drive' || Date.now() - this.plugAt < PLUG_EVERY) return;
     this.plugAt = Date.now();
@@ -200,32 +248,41 @@ export class Pc {
 
   checkGame() {
     const g = this.game;
-    if (!g || !this.enabled) return;
+    if (!g) return;
     const now = Date.now();
-    // Active play keeps her awake; opting into hiding is a separate preference.
-    if (!g.gone && !this.hideInGames && this.wantsOut()) {
-      if (g.put && this.capri.stowed) { g.put = false; this.capri.unstow(); }
-      if (!this.capri.stowed) this.capri.wake();
-    }
-    // You're playing: stay alongside the game by default.
-    if (!g.said && !g.gone && now - g.since >= GAME_AFTER) {
-      g.said = true;
-      if (this.capri.stowed || this.capri.mode === 'alert') return;
-      this.capri.wake();
-      this.say(this.hideInGames ? fmt(pick(this.t.game), { game: g.name })
-        : (this.brain.lang === 'ja' ? 'ゲーム中もここにいるよ。大事な場面では静かに応援するね。' : 'Играешь? Я останусь рядом, чум. Без лишнего шума — но на важные события попробую отреагировать.'), 'smug', 4000);
-      if (this.hideInGames) setTimeout(() => {
-        if (!this.hideInGames || this.game !== g || g.gone || this.capri.stowed || this.capri.mode === 'alert') return;
-        g.put = true;
-        this.capri.stow();
-      }, 2600);
-    }
-    // done playing: she comes back, if she's the one who left
-    if (g.gone && now - g.gone >= GAME_OVER) {
-      this.game = null;
-      if (g.put && this.capri.stowed && this.wantsOut()) {
-        this.capri.unstow().then(() => this.say(pick(this.t.gameBack), 'look', 5000));
+    // A brief Alt+Tab does not cause repeated wake/sleep transitions.
+    if (g.gone) {
+      if (now - g.gone >= GAME_OVER) {
+        this.game = null;
+        this.releaseGame(g, true);
       }
+      return;
+    }
+    if (!this.wantsOut()) { this.releaseGame(g); return; }
+    // Something else woke her, or the user brought her out: don't immediately put her back.
+    if ((g.sleeping && this.capri.mode !== 'sleep' && !this.capri.dormant)
+      || (g.put && !this.capri.stowed && !this.capri.stowing)) this.interact();
+    const behavior = this.behaviorFor(g);
+    if (behavior === 'stay') {
+      this.releaseGame(g);
+      if (!this.capri.stowed && this.capri.mode !== 'alert') this.capri.wake();
+      if (!g.said && now - g.since >= GAME_AFTER && this.quiet) {
+        g.said = true;
+        this.say(this.brain.lang === 'ja' ? 'ゲーム中もここにいるよ。大事な場面では静かに応援するね。'
+          : 'Играешь? Я останусь рядом, чум. Без лишнего шума — но на важные события попробую отреагировать.', 'smug', 4000);
+      }
+      return;
+    }
+    if (g.sleeping || g.put || now < (g.overrideUntil || 0) || now - g.since < this.gameDelaySeconds * 1000) return;
+    // Never take a conversation, drag, animation, or manually chosen sleep away from the user.
+    if (this.chat.open || this.guide.running || this.panel.visible || !this.capri.free || this.capri.mode !== 'idle') return;
+    this.onRest?.();
+    if (behavior === 'sleep') {
+      g.sleeping = true;
+      this.capri.setMode('sleep');
+    } else {
+      g.put = true;
+      this.capri.stow();
     }
   }
 }

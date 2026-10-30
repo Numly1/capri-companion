@@ -7,6 +7,31 @@ const { eventsFromText, SS14Tracker, foreground, start } = require('../src/main/
 const active = () => ({ active: true, id: '123', bounds: { x: 0, y: 0, width: 1920, height: 1080 }, server: 'Arcane Nirvana' });
 const red = 'Внимание! Уровень угрозы станции теперь Красный! Объявлено особое положение Код Красный.';
 
+test('additional visible station events have fixed reactions, and ERP is one optional bounded joke', () => {
+  const events = [
+    ['Meteors have been detected on collision course with the station.', 'meteor-start'],
+    ['The meteor swarm has passed. Please return to your stations.', 'meteor-end'],
+    ['Ion storm detected near the station.', 'ion-storm'],
+    ["Abnormal activity detected in the station's powernet.", 'power-down'],
+    ['Power has been restored to the station.', 'power-restored'],
+    ['Attention crew, there is a gas leak on the station.', 'gas-leak'],
+    ['A solar flare has been detected near the station.', 'solar-start'],
+    ['The solar flare ended.', 'solar-end'],
+    ['На станции обнаружена утечка газа.', 'gas-leak'],
+    ['Ионный шторм обнаружен вблизи станции.', 'ion-storm'],
+  ];
+  for (const [text, kind] of events) {
+    assert.equal(eventsFromText(text)[0]?.kind, kind);
+    const reaction = new SS14Tracker().sample(text, { ss14Reactions: true });
+    assert.equal(reaction.kind, kind); assert.ok(reaction.line.length > 15);
+  }
+  for (const text of ['Терпение', 'Серп', 'Перпетуум', 'ERPtools']) assert.deepEqual(eventsFromText(text), []);
+  const tracker = new SS14Tracker();
+  const line = tracker.sample('В чате упомянули ЕРП.', { ss14Reactions: true }).line;
+  assert.match(line, /Осуждаю/);
+  assert.equal(new SS14Tracker().sample('ERP', { ss14Reactions: true, ss14ErpReaction: false }), null);
+});
+
 test('recognizes supported Arcane announcements and returns only fixed event types', () => {
   const cases = [
     [red, 'alert-red'], ['УРОВЕНЬ УГРОЗЫ:\nСиний', 'alert-blue'],
