@@ -2,6 +2,7 @@
 const MAX_COVER_CHARS = 40000;
 const clamp = (value, low, high) => Math.max(low, Math.min(Math.max(low, high), value));
 const clean = (value) => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 200) : '';
+const SPOTIFY_SESSION = /^(?:Spotify(?:\.exe)?|SpotifyAB\.SpotifyMusic_zpdnekdrzrea0!Spotify)$/i;
 
 export function spotifyCover(value) {
   return typeof value === 'string' && value.length <= MAX_COVER_CHARS &&
@@ -35,6 +36,8 @@ export class CompanionSpotifyWidget {
     this.music = null;
     this.updatedAt = 0;
     this.disposed = false;
+    this.pending = false;
+    this.feedbackUntil = 0;
     this.document = options.document || document;
     this.window = options.window || window;
     const make = (tag, className, parent) => {
@@ -65,6 +68,19 @@ export class CompanionSpotifyWidget {
     this.track.setAttribute('aria-valuemin', '0');
     this.track.setAttribute('aria-valuemax', '100');
     this.fill = make('div', 'companion-spotify-widget__fill', this.track);
+    this.controls = make('div', 'companion-spotify-widget__controls', this.el);
+    this.controls.setAttribute('role', 'group');
+    this.controls.setAttribute('aria-label', 'Управление Spotify');
+    this.buttons = {};
+    for (const [action, glyph, label] of [['previous', '⏮', 'Предыдущий трек'], ['toggle', 'Ⅱ', 'Пауза'], ['next', '⏭', 'Следующий трек'], ['dance', '✦', 'Потанцуй под музыку']]) {
+      const button = make('button', `companion-spotify-widget__button companion-spotify-widget__button--${action}`, this.controls);
+      button.type = 'button'; button.textContent = glyph; button.title = label;
+      button.setAttribute('aria-label', label); button.disabled = true;
+      button.addEventListener('click', event => { event.stopPropagation(); this.command(action); });
+      this.buttons[action] = button;
+    }
+    this.feedback = make('div', 'companion-spotify-widget__feedback', this.el);
+    this.feedback.setAttribute('role', 'status'); this.feedback.setAttribute('aria-live', 'polite'); this.feedback.hidden = true;
     const close = make('button', 'companion-spotify-widget__close', this.el);
     close.type = 'button'; close.textContent = '×'; close.title = 'Скрыть карточку Spotify';
     close.setAttribute('aria-label', close.title);
@@ -73,8 +89,8 @@ export class CompanionSpotifyWidget {
       this.configure({ ...this.cfg, spotifyWidget: false });
       Promise.resolve(host.setConfig?.({ spotifyWidget: false })).catch(() => {});
     });
-    for (const name of ['pointerdown', 'mousedown', 'click', 'dblclick', 'contextmenu']) {
-      this.el.addEventListener(name, event => event.stopPropagation());
+    for (const name of ['pointerdown', 'mousedown', 'touchstart', 'click', 'dblclick', 'contextmenu', 'keydown', 'keyup']) {
+      this.el.addEventListener(name, event => { event.stopPropagation(); if (name === 'contextmenu') event.preventDefault(); });
     }
     this.removeContext = host.onCompanionContext?.(event => this.onSnapshot(event));
     this.removeConfig = host.onConfig?.(cfg => this.configure(cfg));
@@ -98,9 +114,43 @@ export class CompanionSpotifyWidget {
       title: clean(raw.title), artist: clean(raw.artist), album: clean(raw.album), source: raw.source,
       cover: spotifyCover(raw.cover), playing: typeof raw.playing === 'boolean' ? raw.playing : null,
       positionMs: raw.positionMs, durationMs: raw.durationMs,
+      sessionId: typeof raw.sessionId === 'string' && SPOTIFY_SESSION.test(raw.sessionId) ? raw.sessionId : null,
+      controls: Object.fromEntries(['previous', 'play', 'pause', 'next'].map(action => [action, raw.controls?.[action] === true])),
     } : null;
     this.updatedAt = Number.isFinite(state?.updatedAt) ? state.updatedAt : this.now();
     this.render();
+  }
+
+  canControl(action) {
+    const song = this.music;
+    const age = this.now() - this.updatedAt;
+    if (this.disposed || this.pending || !song || age < -2000 || age > 20000) return false;
+    if (action === 'dance') return song.playing === true && typeof this.host.spotifyDance === 'function';
+    return song.source === 'gsmtc' && typeof song.sessionId === 'string' && SPOTIFY_SESSION.test(song.sessionId) &&
+      typeof this.host.spotifyControl === 'function' && song.controls?.[action] === true;
+  }
+
+  async command(choice) {
+    const action = choice === 'toggle' ? (this.music?.playing === true ? 'pause' : 'play') : choice;
+    if (!['previous', 'play', 'pause', 'next', 'dance'].includes(action) || !this.canControl(action)) return;
+    const session = this.music.sessionId;
+    this.pending = true; this.feedback.textContent = 'Секунду…'; this.feedbackUntil = Infinity; this.feedback.setAttribute('data-error', 'false');
+    this.render();
+    try {
+      const result = action === 'dance' ? await this.host.spotifyDance() : await this.host.spotifyControl({ action, sessionId: session });
+      if (this.disposed) return;
+      if (result?.ok !== true) throw new Error(clean(result?.error) || 'Не получилось. Попробуй ещё раз.');
+      if (action !== 'dance' && this.music?.sessionId === session) {
+        if (typeof result.playing === 'boolean') this.music.playing = result.playing;
+        if (result.controls) this.music.controls = Object.fromEntries(['previous', 'play', 'pause', 'next'].map(key => [key, result.controls[key] === true]));
+      }
+      this.feedback.textContent = action === 'dance' ? 'Лови танец ✦' : ({ previous: 'Предыдущий трек ✓', next: 'Следующий трек ✓', pause: 'Пауза ✓', play: 'Включаю музыку ✓' })[action];
+      this.feedbackUntil = this.now() + 3500;
+    } catch (error) {
+      if (this.disposed) return;
+      this.feedback.textContent = clean(error?.message) || 'Spotify не ответил. Попробуй ещё раз.';
+      this.feedback.setAttribute('data-error', 'true'); this.feedbackUntil = this.now() + 8000;
+    } finally { this.pending = false; if (!this.disposed) this.render(); }
   }
 
   render() {
@@ -109,6 +159,7 @@ export class CompanionSpotifyWidget {
       this.panel?.visible || this.chat?.open;
     this.el.hidden = Boolean(hidden);
     if (hidden) return;
+    this.el.setAttribute('aria-busy', String(this.pending));
     const song = this.music;
     this.title.textContent = song.title;
     this.title.title = song.title;
@@ -116,6 +167,15 @@ export class CompanionSpotifyWidget {
     this.artist.title = [song.artist, song.album].filter(Boolean).join(' · ');
     const label = song.playing === true ? 'ИГРАЕТ' : song.playing === false ? 'ПАУЗА' : 'ТРЕК';
     this.heading.textContent = `SPOTIFY / ${label}`;
+    const toggle = song.playing === true ? 'pause' : 'play';
+    const toggleLabel = toggle === 'pause' ? 'Пауза' : 'Продолжить';
+    this.buttons.toggle.textContent = toggle === 'pause' ? 'Ⅱ' : '▶';
+    this.buttons.toggle.title = toggleLabel; this.buttons.toggle.setAttribute('aria-label', toggleLabel);
+    for (const [key, button] of Object.entries(this.buttons)) {
+      button.disabled = !this.canControl(key === 'toggle' ? toggle : key);
+    }
+    this.controls.title = song.source !== 'gsmtc' || !song.sessionId ? 'Управление доступно для приложения Spotify через Windows.' : '';
+    this.feedback.hidden = this.now() > this.feedbackUntil || !this.feedback.textContent;
     if (song.cover !== this.image.getAttribute('src')) {
       if (song.cover) { this.image.setAttribute('src', song.cover); this.image.hidden = false; }
       else { this.image.removeAttribute('src'); this.image.hidden = true; }
@@ -128,7 +188,7 @@ export class CompanionSpotifyWidget {
     }
     const head = this.capri.head();
     const viewport = { w: this.window.innerWidth, h: Math.min(this.window.innerHeight, this.capri.view?.floor || this.window.innerHeight) };
-    const at = spotifyPlacement(head, viewport, this.el.offsetWidth || 244, this.el.offsetHeight || 88, this.capri.scale);
+    const at = spotifyPlacement(head, viewport, this.el.offsetWidth || 244, this.el.offsetHeight || 122, this.capri.scale);
     this.el.style.transform = `translate(${Math.round(at.x)}px,${Math.round(at.y)}px)`;
   }
 

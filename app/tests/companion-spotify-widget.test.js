@@ -36,7 +36,7 @@ async function fixture() {
   const snapshot = overrides => listeners.context({ state: { available: true, updatedAt: state.now,
     music: { title: 'A real track', artist: 'The artist', album: 'The album', playing: true, source: 'gsmtc', cover: COVER,
       durationMs: 200000, positionMs: 50000, ...overrides } } });
-  return { widget, listeners, saved, state, doc, capri, panel, chat, snapshot };
+  return { widget, listeners, saved, state, doc, capri, panel, chat, snapshot, host };
 }
 
 test('Spotify covers accept bounded local image data only, never remote URLs or SVG markup', async () => {
@@ -122,5 +122,51 @@ test('card stylesheet obeys existing CSP by using a local stylesheet link', asyn
   const css = fs.readFileSync(path.join(__dirname, '../src/renderer/styles/companion-spotify-widget.css'), 'utf8');
   assert.ok(css.includes('.companion-spotify-widget'));
   assert.doesNotMatch(css, /url\(/);
+  f.widget.dispose();
+});
+
+test('Spotify controls require a fresh exact native session and each native capability', async () => {
+  const f = await fixture();
+  f.host.spotifyControl = async () => ({ ok: true });
+  f.snapshot({ sessionId: 'Spotify.exe', controls: { previous: true, pause: true, next: false, play: true } });
+  assert.equal(f.widget.buttons.previous.disabled, false); assert.equal(f.widget.buttons.toggle.disabled, false);
+  assert.equal(f.widget.buttons.next.disabled, true); assert.equal(f.widget.buttons.toggle.getAttribute('aria-label'), 'Пауза');
+  f.snapshot({ playing: false, sessionId: 'Spotify.exe', controls: { play: true } });
+  assert.equal(f.widget.buttons.toggle.getAttribute('aria-label'), 'Продолжить'); assert.equal(f.widget.buttons.toggle.textContent, '▶');
+  f.state.now += 20001; f.listeners.tick(); assert.equal(f.widget.buttons.toggle.disabled, true, 'stale helper state cannot control playback');
+  for (const overrides of [{ source: 'window-title', sessionId: 'Spotify.exe' }, { sessionId: 'chrome.exe' }, { sessionId: 'NotSpotify.exe' }, { sessionId: null }]) {
+    f.snapshot({ ...overrides, controls: { play: true, pause: true, previous: true, next: true } });
+    assert.ok(Object.values(f.widget.buttons).every(button => button.disabled));
+  }
+  f.widget.dispose();
+});
+
+test('buttons dispatch one explicit Spotify command with busy feedback and recover from an error', async () => {
+  const f = await fixture(); let finish, calls = [];
+  f.host.spotifyControl = request => { calls.push(request); return new Promise(resolve => { finish = resolve; }); };
+  f.snapshot({ sessionId: 'Spotify.exe', controls: { pause: true, play: true, previous: true, next: true } });
+  const pending = f.widget.command('toggle');
+  assert.deepEqual(calls, [{ action: 'pause', sessionId: 'Spotify.exe' }]);
+  assert.equal(f.widget.el.getAttribute('aria-busy'), 'true'); assert.equal(f.widget.feedback.textContent, 'Секунду…');
+  assert.ok(Object.values(f.widget.buttons).every(button => button.disabled));
+  await f.widget.command('next'); assert.equal(calls.length, 1, 'rapid clicks are not queued');
+  finish({ ok: true, playing: false, controls: { play: true, next: true, previous: true } }); await pending;
+  assert.equal(f.widget.buttons.toggle.textContent, '▶'); assert.equal(f.widget.el.getAttribute('aria-busy'), 'false');
+  assert.equal(f.widget.feedback.textContent, 'Пауза ✓');
+  const next = f.widget.command('next'); finish({ ok: false, error: 'Сессия Spotify недоступна.' }); await next;
+  assert.equal(f.widget.feedback.getAttribute('data-error'), 'true'); assert.match(f.widget.feedback.textContent, /недоступна/);
+  assert.equal(f.widget.buttons.next.disabled, false, 'error releases busy state for retry');
+  f.state.now += 8001; f.listeners.tick(); assert.equal(f.widget.feedback.hidden, true);
+  let stopped = 0; f.widget.el.events.pointerdown[0]({ stopPropagation() { stopped++; } });
+  assert.equal(stopped, 1, 'button pointer event cannot start a pet drag');
+  f.widget.dispose();
+});
+
+test('manual dance is separate from playback control and requires real playing metadata', async () => {
+  const f = await fixture(); let dances = 0;
+  f.host.spotifyDance = async () => { dances++; return { ok: true }; };
+  f.snapshot({ playing: false }); await f.widget.command('dance'); assert.equal(dances, 0);
+  f.snapshot({ playing: true }); assert.equal(f.widget.buttons.dance.disabled, false);
+  await f.widget.command('dance'); assert.equal(dances, 1); assert.equal(f.widget.feedback.textContent, 'Лови танец ✦');
   f.widget.dispose();
 });

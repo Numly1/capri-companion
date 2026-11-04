@@ -397,8 +397,9 @@ export class Chat {
     }
     const answer = clean(res.text).replace(/^["“«]\s*|\s*["”»]$/g, '') || '…';
     this.seen = { text: answer, at: Date.now() };
-    if (this.open && this.turn === id) this.onAnswer?.(answer);
-    return say(answer, mood(answer));
+    const current = this.open && this.turn === id;
+    say(answer, mood(answer));
+    if (current && this.open) this.onAnswer?.(answer);
   }
 
   // an answer of hers, kept with your message before it

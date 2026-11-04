@@ -34,6 +34,10 @@ const DEFAULTS = {
   minecraftReactions: true,
   minecraftIntervalMinutes: 2,
   minecraftLogPath: '',
+  valorantReactions: true,
+  valorantIntervalMinutes: 2,
+  lolReactions: true,
+  lolIntervalMinutes: 2,
   effectLevel: 'full',
   companionWelcomed: false,
   displayId: null,   // null = primary display
@@ -71,6 +75,8 @@ const DEFAULTS = {
   discordPresence: false,
   discordClientId: '',
   discordShareActivity: true,
+  discordShareMusic: false,
+  discordElapsed: true,
   watchScreen: false, // she looks at your screen now and then and says something about it (look.js)
   lookAsked: false,  // she told you what looking means (where the picture goes) and you said yes
 };

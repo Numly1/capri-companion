@@ -1,4 +1,4 @@
-# Watches the top-level windows so Capri can sit on them.
+﻿# Watches the top-level windows so Capri can sit on them.
 # Prints one JSON line whenever something changes: the foreground window and the visible
 # windows in z-order (front first), as physical-pixel frame bounds. No contents, and no titles:
 # the title of the window in front is only checked against a short list of AI names (ChatGPT,
@@ -78,13 +78,15 @@ public static class CapriWindows {
     uint pid;
     GetWindowThreadProcessId(fg, out pid);
     try { proc = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName.ToLowerInvariant(); } catch {}
+    string riot = RiotKind(proc);
+    if (riot != "") game = riot == "valorant" ? "Valorant" : "League of Legends";
     IntPtr h = OpenProcess(0x1000, false, pid); // PROCESS_QUERY_LIMITED_INFORMATION
     if (h == IntPtr.Zero) return;
     var path = new StringBuilder(1024);
     int size = path.Capacity;
     if (QueryFullProcessImageName(h, 0, path, ref size)) {
       var m = GAME.Match(path.ToString());
-      if (m.Success && !NOT_GAME.IsMatch(m.Groups[1].Value)) game = m.Groups[1].Value;
+      if (riot == "" && m.Success && !NOT_GAME.IsMatch(m.Groups[1].Value)) game = m.Groups[1].Value;
     }
     CloseHandle(h);
   }
@@ -115,6 +117,24 @@ public static class CapriWindows {
     if (!Regex.IsMatch(caption.ToString(), @"\bMinecraft\b", RegexOptions.IgnoreCase)) return "null";
     uint pid; GetWindowThreadProcessId(fg, out pid);
     return "{\"active\":true,\"id\":" + fg.ToInt64() + ",\"pid\":" + pid + "}";
+  }
+
+  // Exact client process names only: launchers and browser titles are not a match.
+  public static string RiotKind(string name) {
+    string value = (name ?? "").ToLowerInvariant();
+    if (value == "valorant-win64-shipping") return "valorant";
+    if (value == "league of legends" || value == "leagueoflegends") return "lol";
+    return "";
+  }
+
+  static string Riot(IntPtr fg, long self) {
+    Program(fg);
+    string kind = RiotKind(proc);
+    if (kind == "" || fg.ToInt64() == self || !IsWindowVisible(fg) || IsIconic(fg)) return "null";
+    RECT r;
+    if (DwmGetWindowAttribute(fg, DWMWA_EXTENDED_FRAME_BOUNDS, out r, 16) != 0 || r.Right-r.Left < 640 || r.Bottom-r.Top < 360) return "null";
+    return "{\"active\":true,\"id\":" + fg.ToInt64() + ",\"game\":" + Json(kind) +
+      ",\"bounds\":{\"x\":" + r.Left + ",\"y\":" + r.Top + ",\"width\":" + (r.Right-r.Left) + ",\"height\":" + (r.Bottom-r.Top) + "}}";
   }
 
   static string Json(string s) {
@@ -229,6 +249,7 @@ public static class CapriWindows {
       .Append(",\"game\":").Append(game == "" ? "null" : Json(game))
       .Append(",\"ss14\":").Append(Ss14(fg, self))
       .Append(",\"minecraft\":").Append(Minecraft(fg, self))
+      .Append(",\"riot\":").Append(Riot(fg, self))
       .Append(",\"usb\":").Append(Usb());
     lock (gate) sb.Append(",\"plug\":").Append(plug);
     sb.Append(",\"wins\":[");

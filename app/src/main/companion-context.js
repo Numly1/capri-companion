@@ -4,6 +4,7 @@
 const path = require('node:path');
 const readline = require('node:readline');
 const { spawn } = require('node:child_process');
+const { sessionId: spotifySessionId, controls: spotifyControls } = require('./companion-spotify-control');
 
 const POLL_MS = 10000;
 const DRAW_DWELL = 90000;
@@ -44,6 +45,8 @@ function sanitizeSnapshot(raw) {
     title, artist: text(song.artist), playing: typeof song.playing === 'boolean' ? song.playing : null, source,
     album: text(song.album), cover: sanitizeCover(song.cover),
     durationMs: timelineMs(song.durationMs), positionMs: timelineMs(song.positionMs),
+    sessionId: source === 'gsmtc' ? spotifySessionId(song.sessionId) : null,
+    controls: spotifyControls(source === 'gsmtc' && spotifySessionId(song.sessionId) ? song.controls : null),
   } : null;
   if (music && music.durationMs !== null && music.positionMs !== null && music.positionMs > music.durationMs) music.positionMs = music.durationMs;
   return { drawingApp: app, music, mediaAvailable: raw?.mediaAvailable === true };

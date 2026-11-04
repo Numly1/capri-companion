@@ -127,11 +127,12 @@ function Get-Spotify {
     }
     if ($script:manager) {
       foreach ($session in $script:manager.GetSessions()) {
-        if ($session.SourceAppUserModelId -notmatch '(?i)spotify') { continue }
+        if ($session.SourceAppUserModelId -notmatch '^(?i:Spotify(?:\.exe)?|SpotifyAB\.SpotifyMusic_zpdnekdrzrea0!Spotify)$') { continue }
         $properties = Wait-WinRt ($session.TryGetMediaPropertiesAsync()) $script:mediaType
         if (-not $properties -or [string]::IsNullOrWhiteSpace($properties.Title)) { continue }
         $duration=$null; $position=$null
-        $playing = $session.GetPlaybackInfo().PlaybackStatus.ToString() -eq 'Playing'
+        $playback = $session.GetPlaybackInfo()
+        $playing = $playback.PlaybackStatus.ToString() -eq 'Playing'
         try {
           $timeline = $session.GetTimelineProperties()
           $duration = [Math]::Max(0, [Math]::Round(($timeline.EndTime - $timeline.StartTime).TotalMilliseconds))
@@ -144,7 +145,8 @@ function Get-Spotify {
         $cover = Get-SpotifyCover $properties $key
         return @{ title=[string]$properties.Title; artist=[string]$properties.Artist; album=[string]$properties.AlbumTitle;
           cover=$cover; durationMs=$duration; positionMs=$position;
-          playing=$playing; source='gsmtc' }
+          playing=$playing; source='gsmtc'; sessionId=[string]$session.SourceAppUserModelId;
+          controls=@{ previous=($playback.Controls.IsPreviousEnabled -eq $true); next=($playback.Controls.IsNextEnabled -eq $true); play=($playback.Controls.IsPlayEnabled -eq $true); pause=($playback.Controls.IsPauseEnabled -eq $true) } }
       }
     }
   } catch { $script:manager = $null }

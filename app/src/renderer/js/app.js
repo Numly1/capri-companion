@@ -21,6 +21,8 @@ import { CompanionIdle } from './companion-idle.js';
 import { CompanionSS14 } from './companion-ss14.js';
 import { CompanionMinecraft } from './companion-minecraft.js';
 import { CompanionWatching } from './companion-watching.js';
+import { CompanionRiot } from './companion-riot.js';
+import { CompanionMusicDance } from './companion-music-dance.js';
 import { linesFor } from './lines.js';
 import { pick, fmt, reducedMotion } from './util.js';
 
@@ -194,6 +196,9 @@ async function boot() {
   });
 
   // wiring
+  let cancelSpeech = () => {};
+  const voiceEnabled = cfg => cfg.companionVoice !== false && !cfg.muted && Number(cfg.volume ?? 0.7) > 0;
+  let speechEnabled = voiceEnabled(config);
   capri.onMove = (head) => {
     // pointing at something: the panel goes on her other side, so it doesn't cover it
     panel.setAnchor({ ...head, lean: capri.pointing ? -capri.pointing.dir : 0 }, capri.view);
@@ -203,6 +208,7 @@ async function boot() {
   capri.onTeleport = (phase) => (phase === 'start' ? panel.suspend() : panel.resume());
   capri.chipAt = () => chip.center();
   capri.onStow = () => {
+    cancelSpeech();
     chip.setMode(capri.mode);
     chip.show();
   };
@@ -217,15 +223,18 @@ async function boot() {
       mask.hide();
     }
   };
-  capri.onMode = (mode, prev) => chip.setMode(mode, prev);
+  capri.onMode = (mode, prev) => {
+    chip.setMode(mode, prev);
+    if (mode === 'sleep' || mode === 'alert') cancelSpeech();
+  };
   // now and then she says something about the satellite: while she looks at it, or once
   // the red light has gone up (never during, nothing should cover that)
   capri.onGaze = (when) => {
     const lines = when === 'end' ? brain.t.uplink : brain.t.gaze;
     if (!panel.visible && Math.random() < (when === 'end' ? 0.6 : 0.4)) panel.say({ kind: 'info', ambient: true, line: pick(lines), hold: 3800 });
   };
-  panel.onChar = (kind) => voice.play('blip', { mood: kind });
-  panel.onTalk = (talking) => talking && capri.perform('talk');
+  panel.onChar = (kind) => { if (!speechEnabled) voice.play('blip', { mood: kind }); };
+  panel.onTalk = (talking) => { if (!speechEnabled && talking) capri.perform('talk'); };
   capri.onMenu = () => host.openMenu();
 
   // Her guide (guide.js): her welcome on first launch, and "How does it work?" in her menu,
@@ -258,7 +267,7 @@ async function boot() {
   brain.onRival = (key) => jealousy.onRivalEvent(key);
   const reminders = new Reminders({ host, list: config.reminders || [] });
   chat.reminders = reminders;
-  chat.onMessage = () => bond.add('chat', 2);
+  chat.onMessage = () => { speech.stop(); bond.add('chat', 2); };
   // looking at your screen (look.js): when you ask, or now and then if you turned it on
   const look = new Look({ capri, panel, brain, chat, guide, host, fx, voice, active: () => performance.now() - lastMove });
   look.configure(config);
@@ -272,6 +281,30 @@ async function boot() {
   const companion = new CompanionContext({ capri, panel, brain, host, chat, guide });
   spotifyWidget = new CompanionSpotifyWidget({ capri, host, panel, chat });
   const speech = new CompanionSpeech({ host, panel, chat, brain });
+  cancelSpeech = () => speech.stop();
+  let talkTimer = null, speechRest = null;
+  speech.onPlayback = talking => {
+    clearInterval(talkTimer); talkTimer = null;
+    if (!talking) {
+      if (capri.act?.player.name === 'talk') capri.endAct(false);
+      return;
+    }
+    const moveMouth = () => {
+      if (capri.free && capri.mode !== 'sleep' && capri.mode !== 'alert') capri.perform('talk');
+    };
+    moveMouth(); talkTimer = setInterval(moveMouth, 450);
+  };
+  speech.onActivity = active => {
+    if (active) {
+      capri.wake();
+      speechRest = { move: capri.nextMove, gaze: capri.nextGaze };
+      capri.nextMove = capri.nextGaze = Infinity;
+    } else if (speechRest) {
+      if (capri.nextMove === Infinity) capri.nextMove = Math.max(performance.now() + 3000, speechRest.move);
+      if (capri.nextGaze === Infinity) capri.nextGaze = Math.max(performance.now() + 3000, speechRest.gaze);
+      speechRest = null;
+    }
+  };
   const watching = new CompanionWatching({ host, capri, panel, chat, guide, pc });
   watching.onSay = text => speech.say(text);
   const reportPresence = () => host.reportPresence?.({ mode: capri.mode, chat: chat.open });
@@ -282,6 +315,8 @@ async function boot() {
   speech.configure(config);
   const idleCompanion = new CompanionIdle({ capri, panel, brain, chat, guide, host });
   idleCompanion.configure(config);
+  const musicDance = new CompanionMusicDance({ capri, panel, chat, guide, pc, speech }, { reduced: () => reducedMotion.matches });
+  window.addEventListener('beforeunload', () => musicDance.stop());
   panel.onAmbientSay = (text) => speech.sayAmbient(text);
   const ss14 = new CompanionSS14({ host, capri, panel, chat, guide });
   ss14.configure(config);
@@ -289,6 +324,9 @@ async function boot() {
   const minecraft = new CompanionMinecraft({ host, capri, panel, chat, guide });
   minecraft.configure(config);
   minecraft.onSay = text => speech.say(text);
+  const riot = new CompanionRiot({ host, capri, panel, chat, guide, brain });
+  riot.configure(config);
+  riot.onSay = text => speech.say(text);
   chat.onAnswer = (text) => speech.say(text);
   chat.onClose = () => { speech.cancelRecording(); speech.stop(); };
   companion.onSay = (text) => speech.say(text);
@@ -637,6 +675,8 @@ async function boot() {
   });
 
   host.onConfig((cfg) => {
+    riot.configure(cfg);
+    speechEnabled = voiceEnabled(cfg);
     chat.replyLanguage = cfg.responseLanguage === 'ja' ? 'ja' : 'ru';
     speech.configure(cfg);
     if (chat.open && chat.offline !== (cfg.offlineChat !== false)) panel.hide();
@@ -680,34 +720,81 @@ async function boot() {
     if (cmd.name !== 'stow') pc.interact();
     const t = brain.t;
     switch (cmd.name) {
+      case 'riotStatus': {
+        const state = await host.riotStatus();
+        const cfg = await host.getConfig();
+        const game = cmd.game === 'lol' ? 'lol' : 'valorant';
+        const name = game === 'lol' ? 'League of Legends' : 'Valorant';
+        const explanation = game === 'lol'
+          ? 'Читаю новые события дракона, Барона, Герольда, башен и ингибиторов из локального API игры. Старые события не пересказываю.'
+          : 'Реагирую на крупные видимые надписи о победе, поражении и установке спайка. Скрытые события не вижу.';
+        panel.hide();
+        panel.say({ kind: 'info', face: 'look', line: cfg[game + 'Reactions'] !== true
+          ? 'Реакции ' + name + ' выключены. Их можно включить в моём меню.'
+          : state.game !== game || !state.active ? 'Открой ' + name + ' на переднем плане. ' + explanation
+          : !state.available ? name + ' найден. События пока недоступны. ' + explanation : name + ' подключён. ' + explanation, hold: 14000 });
+        break;
+      }
+      case 'musicDance':
+        if (!chat.open && !guide.running) { speech.stop(); panel.hide(); }
+        if (!await musicDance.start() && !chat.open && !guide.running && !speech.pendingSpeech && !speech.playing) {
+          panel.hide();
+          panel.say({ kind: 'info', face: 'smug', line: 'Чум, сейчас я занята. Давай потанцуем, когда закончим разговор или выйдем из игры.', hold: 6500 });
+        }
+        break;
       case 'discordSetup':
         await guide.scene(async () => {
           let error = '';
           for (;;) {
-            const got = await guide.askText({ face: 'look', line: 'Подключим мой статус в Discord.',
-              quote: error || 'Открой портал Discord → New Application → назови Capri Companion → скопируй Application ID из General Information. Это публичный номер приложения.',
-              placeholder: 'Application ID · 17–20 цифр', tag: 'DISCORD', note: 'Токен, пароль и Client Secret сюда не нужны.',
-              actions: [{ id: 'portal', label: 'Открыть портал' }],
+            const got = await guide.askText({ face: 'look', line: 'Своё приложение для статуса Discord.',
+              quote: error || 'Общее приложение Capri Companion уже доступно всем. Своё нужно только для другого имени или оформления. Вставь Application ID или ссылку на своё приложение из портала Discord.',
+              placeholder: 'Application ID или ссылка на приложение', tag: 'DISCORD', note: 'Нужен только публичный номер. Токен, пароль и Client Secret сюда не нужны.',
+              actions: [{ id: 'common', label: 'Использовать общее' }, { id: 'portal', label: 'Открыть портал' }],
               onAction: id => id === 'portal' && (host.discordPortal(), true),
             });
-            if (!got?.text) break;
-            const id = got.text.trim();
-            if (!/^\d{17,20}$/.test(id)) { error = 'Нужен Application ID из 17–20 цифр. Проверь, что скопирован именно он.'; continue; }
+            const common = got?.action === 'common';
+            if (!common && !got?.text) break;
+            let id = common ? '' : got.text.trim();
+            if (!common && !/^\d{17,20}$/.test(id)) {
+              try {
+                const url = new URL(id);
+                id = url.protocol === 'https:' && ['discord.com', 'discordapp.com'].includes(url.hostname) && !url.username && !url.password
+                  ? /^\/developers\/applications\/(\d{17,20})(?:\/[^?#]*)?$/.exec(url.pathname)?.[1] || '' : '';
+              } catch { id = ''; }
+              if (!id) { error = 'Нужен Application ID из 17–20 цифр или ссылка вида discord.com/developers/applications/… .'; continue; }
+            }
             await host.setConfig({ discordClientId: id, discordPresence: true });
-            await guide.ask({ face: 'smug', line: 'Номер сохранён. Открой приложение Discord на компьютере.',
-              quote: 'Статус обновляется примерно раз в 15 секунд. В настройках Discord должно быть разрешено отображение активности. Передача названия игры и просмотра отключается отдельно в моём меню.',
-              actions: [{ id: 'ok', label: 'Готово', primary: true }] });
-            break;
+            let edit = false;
+            for (;;) {
+              panel.say({ kind: 'work', guide: true, line: 'Проверяю связь с Discord…', hold: null });
+              const status = await host.discordStatus({ retry: true });
+              const choice = await guide.ask({ face: status.state === 'active' ? 'smug' : 'look', line: status.line,
+                quote: 'Имя статуса задаётся приложением Discord. Игра, просмотр и музыка переключаются отдельно в моём меню. Номер сохранён; вводить его при каждом запуске не нужно.',
+                actions: [{ id: 'ok', label: status.state === 'active' ? 'Готово' : 'Позже', primary: status.state === 'active' },
+                  ...(status.state !== 'active' ? [{ id: 'retry', label: 'Повторить', primary: true }] : []), { id: 'edit', label: 'Изменить приложение' }] });
+              if (choice === 'retry') continue;
+              edit = choice === 'edit'; break;
+            }
+            if (!edit) break;
+            error = '';
           }
         });
         break;
       case 'discordStatus': {
-        const status = await host.discordStatus();
-        const descriptions = { off: 'Статус Discord выключен.', 'needs-id': 'Сначала укажи Application ID в моём меню Discord.',
-          connecting: 'Пробую подключиться к приложению Discord.', 'not-running': 'Discord пока недоступен. Открой его настольное приложение — попробую снова.',
-          connected: 'Discord подключён. Передаю статус.', active: 'Discord подтвердил мой статус. Если его не видно, проверь отображение активности в Discord.',
-          rejected: 'Discord отклонил активность. Проверь Application ID и настройки отображения активности.' };
-        panel.hide(); panel.say({ kind: 'info', line: descriptions[status.state] || 'Подключение пока не готово.', hold: 10000 });
+        await guide.scene(async () => {
+          let retry = cmd.retry === true;
+          for (;;) {
+            panel.say({ kind: 'work', guide: true, line: 'Проверяю связь с Discord…', hold: null });
+            const status = await host.discordStatus({ retry });
+            const choice = await guide.ask({ face: status.state === 'active' ? 'smug' : 'look', line: status.line,
+              quote: status.configured ? (status.shared ? 'Общее приложение Capri Companion. Собственный Application ID не требуется.' : 'Используется твоё приложение Discord.') : 'Application ID пока не задан.',
+              actions: [{ id: 'ok', label: 'Понятно', primary: status.state === 'active' },
+                { id: status.enabled ? 'retry' : 'enable', label: status.enabled ? 'Повторить' : 'Включить статус', primary: status.state !== 'active' }] });
+            if (choice === 'enable') await host.setConfig({ discordPresence: true });
+            if (!['enable', 'retry'].includes(choice)) break;
+            retry = true;
+          }
+        });
         break;
       }
       case 'ss14Cheer':

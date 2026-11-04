@@ -68,7 +68,7 @@ export class Pc {
       ? cfg.gameBehavior : cfg.hideInGames === true ? 'hide' : 'stay';
     const seconds = Number(cfg.gameDelaySeconds);
     const delay = Number.isFinite(seconds) ? Math.max(5, Math.min(300, seconds)) : 30;
-    const scope = ['all', 'minecraft', 'ss14'].includes(cfg.gameScope) ? cfg.gameScope : 'all';
+    const scope = ['all', 'minecraft', 'ss14', 'valorant', 'lol'].includes(cfg.gameScope) ? cfg.gameScope : 'all';
     if (behavior !== this.gameBehavior || delay !== this.gameDelaySeconds || scope !== this.gameScope) {
       this.releaseGame(this.game);
       if (this.game) { this.game.since = Date.now(); this.game.said = false; }
@@ -80,6 +80,8 @@ export class Pc {
   }
 
   behaviorFor(game) {
+    if (this.gameScope === 'valorant' && !/valorant/i.test(game.name)) return 'stay';
+    if (this.gameScope === 'lol' && !/league of legends|^lol$/i.test(game.name)) return 'stay';
     if (this.gameScope === 'minecraft' && !/minecraft/i.test(game.name)) return 'stay';
     if (this.gameScope === 'ss14' && !/space station 14|ss14/i.test(game.name)) return 'stay';
     return this.gameBehavior || 'stay';

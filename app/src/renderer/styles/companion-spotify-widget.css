@@ -5,7 +5,7 @@
   top: 0;
   z-index: 3;
   width: 244px;
-  min-height: 88px;
+  min-height: 117px;
   padding: 10px 12px 9px 10px;
   display: grid;
   grid-template-columns: 54px minmax(0, 1fr);
@@ -46,5 +46,14 @@
 .companion-spotify-widget__artist { font-size: 10px; line-height: 15px; color: #c5bacf; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .companion-spotify-widget__track { height: 2px; margin-top: 6px; background: #40334d; overflow: hidden; }
 .companion-spotify-widget__fill { height: 100%; width: 100%; background: #35ff7a; transform-origin: left center; }
+.companion-spotify-widget__controls { grid-column: 2; display: flex; gap: 5px; margin-top: 7px; }
+.companion-spotify-widget__button { width: 31px; height: 25px; display: grid; place-items: center; padding: 0; border: 1px solid #534361; background: #292037; color: #f8f0f6; font: 13px 'Segoe UI Symbol', 'Segoe UI', sans-serif; cursor: pointer; }
+.companion-spotify-widget__button--toggle { color: #35ff7a; font-weight: 700; }
+.companion-spotify-widget__button--dance { color: #b98bff; }
+.companion-spotify-widget__button:hover:not(:disabled), .companion-spotify-widget__button:focus-visible { outline: 1px solid #35ff7a; background: #40304f; }
+.companion-spotify-widget__button:disabled { opacity: .35; cursor: default; }
+.companion-spotify-widget__feedback { grid-column: 1 / -1; margin-top: 5px; color: #a8e5bf; font-size: 10px; line-height: 13px; overflow-wrap: anywhere; }
+.companion-spotify-widget__feedback[data-error='true'] { color: #ff9ac3; }
+.companion-spotify-widget__feedback[hidden] { display: none !important; }
 .companion-spotify-widget__close { position: absolute; right: 4px; top: 3px; width: 24px; height: 24px; border: 0; background: transparent; color: #bdb0cd; font: 17px 'Segoe UI', sans-serif; cursor: pointer; padding: 0; }
 .companion-spotify-widget__close:hover, .companion-spotify-widget__close:focus-visible { background: #352443; color: #fff; outline: 1px solid #7b2eff; }

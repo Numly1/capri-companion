@@ -20,6 +20,8 @@ test('invalid game settings have bounded safe defaults and known scopes only', (
   assert.equal(normalizeGameSettings({ gameDelaySeconds: '15' }).gameDelaySeconds, 30);
   assert.equal(normalizeGameSettings({ gameDelaySeconds: 59.7, gameScope: 'minecraft' }).gameDelaySeconds, 60);
   assert.equal(normalizeGameSettings({ gameScope: 'ss14' }).gameScope, 'ss14');
+  assert.equal(normalizeGameSettings({ gameScope: 'valorant' }).gameScope, 'valorant');
+  assert.equal(normalizeGameSettings({ gameScope: 'lol' }).gameScope, 'lol');
 });
 
 test('config migrates a saved legacy preference and keeps keys and voice through edits and restart', () => {

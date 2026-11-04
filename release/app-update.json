@@ -1,21 +1,21 @@
 {
   "format": "capri-app-update",
-  "version": "0.4.4-companion.9",
+  "version": "0.4.4-companion.10",
   "baseVoiceVersion": "0.4.4-companion.8",
   "baseArchiveSha256": "6d95a7d8dc33965fd24e87d941643398b78491914a329ce14597924a799cb319",
   "voiceDownloadRequiredForUpdate": false,
   "assets": {
     "Capri-Update.exe": {
-      "bytes": 116168192,
-      "sha256": "17f0d73295d98d6388f8236125f19f20e4001fcb26bb5dec74396399325966e4"
+      "bytes": 117567488,
+      "sha256": "04e466c6226f8866000e592b3a48336e39bca561fc316ee8c26289cbb145f3c8"
     },
     "Capri-Download.exe": {
       "bytes": 206848,
-      "sha256": "cbb89d49201d10dc6c21eda5f44edf1597a5889de339222bf09aa029cf90298c"
+      "sha256": "96ab5ccf403d76a4fbe25905885bd961195233860584b52bf182d101a442432c"
     },
-    "Capri-Companion-0.4.4-companion.9-win-x64.exe": {
-      "bytes": 115976773,
-      "sha256": "c1c6268aa1d077714e67768f7e04de6f8b88e28e186160da0d41a759bfe53449"
+    "Capri-Companion-0.4.4-companion.10-win-x64.exe": {
+      "bytes": 117375938,
+      "sha256": "bf37823d4769bc0d19579bf539646de5b4a9391d5f82ccd9bf7b2a707b9205ee"
     }
   }
 }

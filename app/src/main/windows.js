@@ -16,7 +16,7 @@ const { screen } = require('electron');
 const SCRIPT = path.join(__dirname, 'windows.ps1').replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
 
 function startWindowWatch({ overlay, onUpdate }) {
-  if (process.platform !== 'win32') return { stop() {}, refresh() {} };
+  if (process.platform !== 'win32') return { stop() {}, refresh() {}, isRunning: () => false };
 
   let child = null;
   let stopped = false;
@@ -41,19 +41,21 @@ function startWindowWatch({ overlay, onUpdate }) {
       .filter((w) => w.x < bounds.width && w.x + w.w > 0 && w.y < bounds.height && w.y + w.h > 0);
     onUpdate({
       fg: last.fg, taskbar: Boolean(last.taskbar), ai: Array.isArray(last.ai) ? last.ai : [],
-      game: last.game || (last.ss14?.active ? 'Space Station 14' : last.minecraft?.active ? 'Minecraft' : null), usb: Array.isArray(last.usb) ? last.usb : [], plug: last.plug || null, wins,
+      game: last.game || (last.ss14?.active ? 'Space Station 14' : last.minecraft?.active ? 'Minecraft' : last.riot?.active ? (last.riot.game === 'valorant' ? 'Valorant' : last.riot.game === 'lol' ? 'League of Legends' : null) : null), usb: Array.isArray(last.usb) ? last.usb : [], plug: last.plug || null, wins,
       ss14: last.ss14?.active === true ? last.ss14 : null,
       minecraft: last.minecraft?.active === true ? last.minecraft : null,
+      riot: last.riot?.active === true && ['valorant', 'lol'].includes(last.riot.game) ? last.riot : null,
     });
   };
 
   const start = () => {
-    child = spawn('powershell.exe', [
+    const processRef = spawn('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
       '-File', SCRIPT, String(self), String(process.pid),
     ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    child = processRef;
 
-    readline.createInterface({ input: child.stdout }).on('line', (line) => {
+    readline.createInterface({ input: processRef.stdout }).on('line', (line) => {
       try {
         last = JSON.parse(line);
       } catch {
@@ -61,11 +63,19 @@ function startWindowWatch({ overlay, onUpdate }) {
       }
       send();
     });
-    child.stderr.on('data', (d) => console.error('[capri] window watch:', String(d).trim()));
-    child.on('exit', () => {
-      child = null;
+    processRef.stderr.on('data', (d) => console.error('[capri] window watch:', String(d).trim()));
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      if (child === processRef) child = null;
+      // The helper emits changes, rather than heartbeats. Its exit is the signal
+      // that foreground metadata is stale; keep the last window geometry intact.
+      if (last) { last = { ...last, fg: null, taskbar: false, ai: [], game: null, ss14: null, minecraft: null, riot: null }; send(); }
       if (!stopped && restarts++ < 3) setTimeout(start, 3000);
-    });
+    };
+    processRef.once('error', finish);
+    processRef.once('exit', finish);
   };
 
   start();
@@ -76,6 +86,7 @@ function startWindowWatch({ overlay, onUpdate }) {
     },
     // her window moved (another screen, the taskbar in it or not): the same windows, from there
     refresh: send,
+    isRunning: () => Boolean(child && !stopped),
   };
 }
 

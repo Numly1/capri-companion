@@ -63,6 +63,7 @@ export class Panel {
     this.onChar = null;    // (mood) => void, for the voice blips
     this.onTalk = null;    // (talking: boolean) => void
     this.onAmbientSay = null; // (text) => void: accepted, authored autonomous speech only
+    this.speechLease = null; // the exact visible message whose audio is preparing/playing
     this.suspended = false;
     this.tickerAction = null;
     this.tickerShownAt = 0;
@@ -132,6 +133,7 @@ export class Panel {
       if (PRIORITY[msg.kind] >= 3) this.missed = { ...msg, missedAt: performance.now() };
       return false;
     }
+    this.invalidateSpeech();
     if (cur && this.visible) this.onDismiss?.(cur);
     cur?.onLeave?.();
     this.current = { ...msg, at: performance.now() };
@@ -168,7 +170,7 @@ export class Panel {
     const spoken = ambientText(msg);
     if (spoken) this.onAmbientSay?.(spoken);
 
-    if (msg.hold) this.hideTimer = setTimeout(() => this.hide(), msg.hold);
+    if (msg.hold && !this.speechLease) this.hideTimer = setTimeout(() => this.hide(), msg.hold);
     return true;
   }
 
@@ -314,6 +316,7 @@ export class Panel {
   // announcing the panel all over again.
   chatTurn({ quote, face }) {
     if (!this.current?.chat) return;
+    this.invalidateSpeech();
     clearInterval(this.decodeTimer);
     this.stopStream();
     this.setFace(face);
@@ -328,6 +331,9 @@ export class Panel {
   // up faster the further behind it is (Claude Code's answer comes in one piece), and glitches once done.
   stream(text, { done = false } = {}) {
     if (!this.current?.chat) return;
+    // Appending an action result belongs to the same answer; replacing it cancels its audio.
+    if (this.speechLease && !text.trim().startsWith(this.speechLease.sourceText.trim())) this.invalidateSpeech();
+    this.current.line = text;
     this.streamTo = [...text];
     this.streamDone = done;
     // an answer rewritten rather than added to (a reasoning block cut out, an error): from where they part
@@ -444,6 +450,7 @@ export class Panel {
   }
 
   hide() {
+    this.invalidateSpeech();
     clearTimeout(this.hideTimer);
     clearInterval(this.decodeTimer);
     this.stopStream();
@@ -478,6 +485,8 @@ export class Panel {
   }
 
   suspend() {
+    this.resumeSpeechMessage = this.speechLease?.message || null;
+    this.invalidateSpeech();
     this.suspended = true;
     this.el.style.visibility = 'hidden';
     this.tickerEl.style.visibility = 'hidden';
@@ -489,12 +498,61 @@ export class Panel {
     this.tickerEl.style.visibility = '';
     this.place();
     if (!this.el.hidden) this.replayEnter();
+    if (this.resumeSpeechMessage === this.current && this.current?.hold && !this.speechLease) {
+      clearTimeout(this.hideTimer);
+      this.hideTimer = setTimeout(() => this.hide(), Math.max(2500, Math.min(5000, this.current.hold)));
+    }
+    this.resumeSpeechMessage = null;
   }
 
   replayEnter() {
     this.el.classList.remove('is-entering');
     void this.el.offsetWidth; // restart the CSS animation
     this.el.classList.add('is-entering');
+  }
+
+  reserveSpeech(onCancel, sourceText) {
+    if (!this.current || !this.visible || this.current.chat?.secret) return null;
+    this.invalidateSpeech();
+    clearTimeout(this.hideTimer);
+    const lease = { message: this.current, sourceText, onCancel, active: true };
+    this.speechLease = lease;
+    return lease;
+  }
+
+  isSpeechCurrent(lease) {
+    return Boolean(lease?.active && this.speechLease === lease && this.current === lease.message && this.visible);
+  }
+
+  setSpeechPlaying(lease, playing) {
+    if (!this.isSpeechCurrent(lease)) return;
+    this.el.classList.toggle('is-speaking', playing);
+    this.speechPortrait?.cancel(); this.speechPortrait = null;
+    if (playing && !reducedMotion.matches && this.portrait?.animate) {
+      this.speechPortrait = this.portrait.animate([
+        { transform: 'translateY(0)' }, { transform: 'translateY(-1px)' }, { transform: 'translateY(0)' },
+      ], { duration: 480, iterations: Infinity });
+    }
+  }
+
+  releaseSpeech(lease) {
+    if (!lease || this.speechLease !== lease) return;
+    this.setSpeechPlaying(lease, false);
+    lease.active = false;
+    this.speechLease = null;
+    if (this.current === lease.message && this.visible && lease.message.hold) {
+      clearTimeout(this.hideTimer);
+      this.hideTimer = setTimeout(() => this.hide(), Math.max(2500, Math.min(5000, lease.message.hold)));
+    }
+  }
+
+  invalidateSpeech() {
+    const lease = this.speechLease;
+    if (!lease) return;
+    this.speechLease = null; lease.active = false;
+    this.speechPortrait?.cancel(); this.speechPortrait = null;
+    this.el.classList.remove('is-speaking');
+    lease.onCancel?.();
   }
 
   decode(text, kind) {

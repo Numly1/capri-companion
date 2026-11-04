@@ -178,7 +178,7 @@ test('Spotify artwork permits bounded local JPEG/PNG only and timeline is finite
 });
 
 test('conversation context excludes artwork and timeline while preserving real track identity', () => {
-  const state = { enabled: true, drawing: { app: 'Krita' }, music: { title: 'Track', artist: 'Artist', album: 'Album', source: 'gsmtc', playing: false, cover: 'PRIVATE COVER', durationMs: 123, positionMs: 10 }, updatedAt: 1000 };
+  const state = { enabled: true, drawing: { app: 'Krita' }, music: { title: 'Track', artist: 'Artist', album: 'Album', source: 'gsmtc', playing: false, cover: 'PRIVATE COVER', durationMs: 123, positionMs: 10, sessionId: 'Spotify.exe', controls: { pause: true } }, updatedAt: 1000 };
   const safe = conversationContext(state);
   assert.deepEqual(safe.music, { title: 'Track', artist: 'Artist', album: 'Album', source: 'gsmtc', playing: false });
   assert.equal(safe.drawing.app, 'Krita');

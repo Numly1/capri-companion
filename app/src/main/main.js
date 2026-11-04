@@ -22,12 +22,14 @@ const launch = require('./launch');
 const files = require('./files');
 const offlineCompanion = require('./offline-companion');
 const companionContext = require('./companion-context');
+const spotifyControl = require('./companion-spotify-control');
 const companionSpeech = require('./companion-speech');
 const companionScreen = require('./companion-screen');
 const companionVoiceRuntime = require('./companion-voice-runtime');
 const { installReference } = require('./companion-voice-clips');
 const companionSS14 = require('./companion-ss14');
 const companionMinecraft = require('./companion-minecraft');
+const companionRiot = require('./companion-riot');
 const companionDiscord = require('./companion-discord');
 const { WatchingTracker, sanitizeWatching } = require('./companion-watching');
 const { chooseVisionModel } = require('./companion-model-choice');
@@ -42,6 +44,7 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const referenceRuntimes = new Map();
 let ss14Service = null;
 let minecraftService = null;
+let riotService = null;
 let discordService = null;
 let latestWatching = null;
 let latestWatchingAt = 0;
@@ -317,11 +320,11 @@ function resolveLang(setting) {
 // What the overlay gets: `lang` is the resolved one, `langSetting` what the user picked.
 function rendererConfig() {
   const { apiKeys, ...cfg } = config.load(); // the keys stay here: the overlay only learns which ones are set
-  return { ...cfg, capriVoiceAvailable: fs.existsSync(path.join(ROOT, 'assets/companion-voice/manifest.json')), keys: Object.keys(apiKeys || {}), assistant: activeAssistant().id, lang: resolveLang(cfg.lang), langSetting: cfg.lang, floorGap: overlayArea().gap };
+  return { ...cfg, discordApplicationId: companionDiscord.clientIdFor(cfg), discordUsesSharedApp: !companionDiscord.parseId(cfg.discordClientId), capriVoiceAvailable: fs.existsSync(path.join(ROOT, 'assets/companion-voice/manifest.json')), keys: Object.keys(apiKeys || {}), assistant: activeAssistant().id, lang: resolveLang(cfg.lang), langSetting: cfg.lang, floorGap: overlayArea().gap };
 }
 
 function updateConfig(patch) {
-  if ('discordClientId' in patch && !companionDiscord.validId(patch.discordClientId)) patch = { ...patch, discordClientId: '' };
+  if ('discordClientId' in patch) patch = { ...patch, discordClientId: companionDiscord.parseId(patch.discordClientId) };
   config.save(patch);
   // Sharing must resume from a new helper sample, never from an earlier private session.
   if ('discordShareActivity' in patch || 'discordPresence' in patch) {
@@ -487,7 +490,7 @@ function rebuildTray() {
         label: gameDelaySeconds < 60 ? `${gameDelaySeconds} секунд` : `${gameDelaySeconds / 60} мин`,
         type: 'radio', checked: cfg.gameDelaySeconds === gameDelaySeconds, click: () => updateConfig({ gameDelaySeconds }),
       })) },
-      { label: 'Для каких игр', submenu: [['all', 'Все распознанные игры'], ['minecraft', 'Только Minecraft'], ['ss14', 'Только Space Station 14']].map(([gameScope, label]) => ({
+      { label: 'Для каких игр', submenu: [['all', 'Все распознанные игры'], ['minecraft', 'Только Minecraft'], ['ss14', 'Только Space Station 14'], ['valorant', 'Только Valorant'], ['lol', 'Только League of Legends']].map(([gameScope, label]) => ({
         label, type: 'radio', checked: cfg.gameScope === gameScope, click: () => updateConfig({ gameScope }),
       })) },
       { type: 'separator' },
@@ -495,10 +498,15 @@ function rebuildTray() {
     ] },
     { label: 'Discord Rich Presence', submenu: [
       { label: 'Показывать Капри в Discord', type: 'checkbox', checked: cfg.discordPresence === true,
-        click: item => { updateConfig({ discordPresence: item.checked }); if (item.checked && !companionDiscord.validId(cfg.discordClientId)) sendCommand('discordSetup'); } },
+        click: item => { updateConfig({ discordPresence: item.checked }); if (item.checked && !companionDiscord.clientIdFor(cfg)) sendCommand('discordSetup'); } },
       { label: 'Показывать игру и название просмотра', type: 'checkbox', checked: cfg.discordShareActivity === true, click: item => updateConfig({ discordShareActivity: item.checked }) },
-      { label: 'Настроить Application ID…', click: () => sendCommand('discordSetup') },
+      { label: 'Также показывать музыку Spotify', type: 'checkbox', checked: cfg.discordShareMusic === true, click: item => updateConfig({ discordShareMusic: item.checked }) },
+      { label: 'Показывать время в текущем состоянии', type: 'checkbox', checked: cfg.discordElapsed !== false, click: item => updateConfig({ discordElapsed: item.checked }) },
+      { type: 'separator' },
+      { label: 'Общее приложение Capri Companion', type: 'radio', checked: !companionDiscord.parseId(cfg.discordClientId), click: () => updateConfig({ discordClientId: '' }) },
+      { label: 'Настроить своё приложение…', click: () => sendCommand('discordSetup') },
       { label: 'Проверить подключение', click: () => sendCommand('discordStatus') },
+      { label: 'Повторить подключение сейчас', click: () => sendCommand('discordStatus', { retry: true }) },
     ] },
     { label: 'Смотрим вместе · Кинопоиск', submenu: [
       ...[['off', 'Без комментариев'], ['auto', 'Автоматически при воспроизведении'], ['manual', 'Считай, что я смотрю · вручную']].map(([watchMode, label]) => ({
@@ -510,6 +518,7 @@ function rebuildTray() {
       { label: 'Реплики без спойлеров · без отправки кадров', enabled: false },
     ] },
     { label: 'Spotify', submenu: [
+      { label: 'Капри, потанцуй', click: () => sendCommand('musicDance') },
       { label: 'Показывать трек и обложку', type: 'checkbox', checked: cfg.spotifyWidget !== false, click: (item) => updateConfig({ spotifyWidget: item.checked, ...(item.checked && { companionContext: true }) }) },
       { label: 'Реагировать на музыку', type: 'checkbox', checked: cfg.spotifyReactions !== false, click: (item) => updateConfig({ spotifyReactions: item.checked, ...(item.checked && { companionContext: true }) }) },
       { type: 'separator' },
@@ -544,6 +553,16 @@ function rebuildTray() {
       { type: 'separator' },
       ...[1, 2, 5, 10].map(minutes => ({ label: `Пауза ${minutes} мин`, type: 'radio', checked: (cfg.minecraftIntervalMinutes || 2) === minutes, click: () => updateConfig({ minecraftIntervalMinutes: minutes }) })),
     ] },
+    ...[['valorant', 'Valorant · видимые события'], ['lol', 'League of Legends · локальные события']].map(([game, label]) => ({
+      label, submenu: [
+        { label: 'Реагировать на игру', type: 'checkbox', checked: cfg[game + 'Reactions'] === true,
+          click: item => updateConfig({ [game + 'Reactions']: item.checked }) },
+        { label: 'Статус интеграции', click: () => sendCommand('riotStatus', { game }) },
+        { type: 'separator' },
+        ...[1, 2, 5, 10].map(minutes => ({ label: 'Пауза ' + minutes + ' мин', type: 'radio',
+          checked: cfg[game + 'IntervalMinutes'] === minutes, click: () => updateConfig({ [game + 'IntervalMinutes']: minutes }) })),
+      ],
+    })),
     { label: 'Цифровой эффект голоса', type: 'checkbox', checked: cfg.digitalVoice !== false, click: (item) => updateConfig({ digitalVoice: item.checked }) },
     { label: 'Анимации и гличи', submenu: [['quiet', 'Спокойно'], ['normal', 'Обычно'], ['full', 'Ярко · больше движений']].map(([effectLevel, label]) => ({ label, type: 'radio', checked: (cfg.effectLevel || 'full') === effectLevel, click: () => updateConfig({ effectLevel }) })) },
     { label: 'Выбрать голос', submenu: [
@@ -887,7 +906,10 @@ function registerIpc() {
   ipcMain.on('companion:presence', (_event, value) => {
     presencePet = { mode: value?.mode === 'sleep' ? 'sleep' : 'idle', chat: value?.chat === true };
   });
-  ipcMain.handle('companion:discord-status', () => discordService?.getState() || { state: 'off' });
+  ipcMain.handle('companion:discord-status', async (_event, request) => {
+    const status = await discordService?.check({ force: request?.retry === true }) || { state: 'off' };
+    return { ...status, line: companionDiscord.statusLine(status) };
+  });
   ipcMain.on('companion:discord-portal', () => shell.openExternal('https://discord.com/developers/applications'));
   // talking to her (chat.js): is Ollama there, with a model to talk with
   ipcMain.handle('chat:status', async () => {
@@ -934,10 +956,13 @@ function registerIpc() {
   });
   ipcMain.on('chat:stop', (_e, id) => chats.get(id)?.abort());
   ipcMain.handle('companion:context', () => companionContext.getContext());
+  ipcMain.handle('companion:music-dance', () => { sendCommand('musicDance'); return { ok: true }; });
+  ipcMain.handle('companion:spotify-control', (_e, request) => spotifyControl.control(request, config.load()));
   ipcMain.handle('companion:transcribe', (_e, request) => companionSpeech.transcribe(request, config.load(), setup.openKeys));
   ipcMain.handle('companion:speak', (_e, request) => companionSpeech.synthesize(request, config.load()));
   ipcMain.handle('companion:ss14-status', () => ({ ...ss14Service?.getState(), enabled: config.load().ss14Reactions === true, active: Boolean(lastWindows?.ss14?.active) }));
   ipcMain.handle('companion:minecraft-status', () => ({ ...minecraftService?.getState(), enabled: config.load().minecraftReactions === true, active: Boolean(lastWindows?.minecraft?.active) }));
+  ipcMain.handle('companion:riot-status', () => riotService?.getState() || { active: false, available: false });
   let localScreenPending = false;
   ipcMain.handle('companion:screen', async () => {
     if (localScreenPending) return { ok: false, local: true, error: 'Уже читаю экран локально. Подожди немного.' };
@@ -1267,8 +1292,12 @@ function main() {
     discordService = companionDiscord.create({ getConfig: () => config.load(),
       getContext: () => {
         const age = Date.now() - latestWatchingAt;
+        const activity = companionContext.getContext();
+        const metadataAge = Date.now() - activity.updatedAt;
+        const fresh = activity.enabled && metadataAge >= 0 && metadataAge <= 25000;
         return { pet: presencePet, game: lastWindows?.game,
-          watching: latestWatchingAt > 0 && age >= 0 && age <= 25000 ? latestWatching : null };
+          watching: latestWatchingAt > 0 && age >= 0 && age <= 25000 ? latestWatching : null,
+          drawing: fresh ? activity.drawing : null, music: fresh ? activity.music : null };
       } });
     ss14Service = companionSS14.start(snapshot => overlay?.webContents.send('companion:ss14', snapshot), () => config.load(), {
       getForeground: () => lastWindows?.ss14,
@@ -1276,6 +1305,10 @@ function main() {
     });
     minecraftService = companionMinecraft.start(snapshot => overlay?.webContents.send('companion:minecraft', snapshot), () => config.load(), {
       getForeground: () => lastWindows?.minecraft,
+    });
+    riotService = companionRiot.start(snapshot => overlay?.webContents.send('companion:riot', snapshot), () => config.load(), {
+      getForeground: () => windowWatch?.isRunning?.() ? lastWindows?.riot : null,
+      canReact: () => config.load().visible !== false && presencePet.mode !== 'sleep' && !overlay?.isFocused(),
     });
     windowWatch = startWindowWatch({
       overlay,
@@ -1317,6 +1350,7 @@ function main() {
     companionContext.stop();
     ss14Service?.stop();
     minecraftService?.stop();
+    riotService?.stop();
     discordService?.stop();
     for (const runtime of referenceRuntimes.values()) runtime.stop();
   });
