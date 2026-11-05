@@ -3,6 +3,7 @@
 // Visible Valorant headlines and the documented, read-only LoL Game Client API.
 // Names, raw API responses and recognized screen text never leave this module.
 const https = require('node:https');
+const { SUPPORT_LINES } = require('./companion-support-lines');
 const { inspect: inspectScreen, boundsFor } = require('./companion-screen');
 const LOL_PATHS = new Set(['/liveclientdata/eventdata', '/liveclientdata/gamestats']);
 const LOL_EVENT_KINDS = Object.freeze({ BaronKill: 'baron', DragonKill: 'dragon', HeraldKill: 'herald', TurretKilled: 'turret', InhibKilled: 'inhibitor' });
@@ -32,7 +33,9 @@ function pauseFor(game, cfg = {}) {
   return (Number.isFinite(value) ? Math.min(30, Math.max(1, value)) : 2) * 60000;
 }
 function reaction(game, kind, sequence) {
-  return { id: `${game}:${sequence}`, game, kind, source: game === 'valorant' ? 'local-screen' : 'lol-live-client', line: LINES[kind], face: ['victory', 'round-win'].includes(kind) ? 'laugh' : 'look' };
+  const prefix = kind === 'defeat' ? 'На экране поражение. ' : kind === 'round-loss' ? 'Раунд закончился не в вашу пользу. ' : null;
+  const line = prefix ? prefix + SUPPORT_LINES.frustration[(sequence - 1) % SUPPORT_LINES.frustration.length] : LINES[kind];
+  return { id: `${game}:${sequence}`, game, kind, source: game === 'valorant' ? 'local-screen' : 'lol-live-client', line, face: ['victory', 'round-win'].includes(kind) ? 'laugh' : 'look' };
 }
 function foreground(value) {
   const bounds = boundsFor(value?.bounds);

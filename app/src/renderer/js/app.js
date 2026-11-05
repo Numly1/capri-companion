@@ -24,6 +24,7 @@ import { CompanionWatching } from './companion-watching.js';
 import { CompanionRiot } from './companion-riot.js';
 import { CompanionMusicDance } from './companion-music-dance.js';
 import { CompanionVisits } from './companion-visits.js';
+import { CompanionSupport } from './companion-support.js';
 import { linesFor } from './lines.js';
 import { pick, fmt, reducedMotion } from './util.js';
 
@@ -310,9 +311,10 @@ async function boot() {
   };
   const watching = new CompanionWatching({ host, capri, panel, chat, guide, pc });
   watching.onSay = text => speech.say(text);
-  const reportPresence = () => host.reportPresence?.({ mode: capri.mode, chat: chat.open });
+  const reportPresence = () => host.reportPresence?.({ mode: capri.mode, chat: chat.open,
+    contextReady: capri.free && capri.mode === 'idle' && !panel.visible && !chat.open && !guide.running && !speech.pendingSpeech && !speech.playing });
   reportPresence();
-  setInterval(reportPresence, 15000);
+  setInterval(reportPresence, 2000);
   const extraActing = new CompanionActing({ capri, fx, voice, panel, chat, guide, host });
   extraActing.configure(config);
   speech.configure(config);
@@ -339,10 +341,14 @@ async function boot() {
   pc.wantsOut = () => wantsOut && !visits?.away;
   pc.configure(config);
   pc.onRest = () => speech.stop();
+  const supportUi = new CompanionSupport({ host, capri, panel, chat, guide, speech });
+  supportUi.configure(config);
+  window.addEventListener('beforeunload', () => supportUi.dispose());
   visits = new CompanionVisits({ host, capri, panel, chat, guide, image, onAwayChange: away => {
     capri.visitAway = away;
     visitVisibility(away);
     if (away) {
+      supportUi.cancel();
       speech.stop(); musicDance.stop(); capri.endAct(false); capri.stopPointing();
       capri.stowNow();
       // The guide stays accessible from the tray while the pet is visiting.
@@ -598,7 +604,7 @@ async function boot() {
   };
 
   // what's in here, for --dev scripts (debug route `eval`)
-  window.dev = { capri, brain, panel, chat, guide, fx, voice, bond, jealousy, reminders, look, pc, setup, visits, screens: () => screens };
+  window.dev = { capri, brain, panel, chat, guide, fx, voice, bond, jealousy, reminders, look, pc, setup, visits, supportUi, screens: () => screens };
 
   host.onClaudeEvent((evt) => brain.handle(evt));
   host.onWindows((data) => {
@@ -693,6 +699,7 @@ async function boot() {
   });
 
   host.onConfig((cfg) => {
+    supportUi.configure(cfg);
     riot.configure(cfg);
     speechEnabled = voiceEnabled(cfg);
     chat.replyLanguage = cfg.responseLanguage === 'ja' ? 'ja' : 'ru';
@@ -736,12 +743,26 @@ async function boot() {
   });
 
   host.onCommand(async (cmd) => {
+    if (cmd.name !== 'support') supportUi.cancel();
     if (visits.away && !['visits', 'stow', 'screens', 'rearmed', 'rearm'].includes(cmd.name)) {
       visits.open(); return;
     }
     if (cmd.name !== 'stow') pc.interact();
     const t = brain.t;
     switch (cmd.name) {
+      case 'support': {
+        await supportUi.show(cmd.category || 'encouragement');
+        break;
+      }
+      case 'kritaStatus': {
+        const state = await host.kritaStatus();
+        panel.hide();
+        panel.say({ kind: 'info', badge: 'KRITA', face: 'look', hold: 18000, line: !state.enabled
+          ? 'Реакции Krita выключены. Включи «Реагировать на рисование» в моём меню.'
+          : (state.active ? 'Krita найдена. ' : 'Верни окно Krita на передний план. ') +
+            `Первая поддержка — примерно через 45 секунд работы в окне, дальше пауза ${state.intervalMinutes} мин. Обычная Krita и версия Steam поддерживаются одинаково. Короткое переключение до 45 секунд не обнуляет отсчёт.` });
+        break;
+      }
       case 'visits':
         await visits.open();
         break;

@@ -109,7 +109,11 @@ test('bounded malformed inputs, names and context are safe', () => {
 test('responder never imports effects-capable modules or issues search actions', () => {
   const fs = require('node:fs');
   const source = fs.readFileSync(require.resolve('../src/main/offline-companion'), 'utf8');
-  assert.doesNotMatch(source, /\brequire\s*\(|\bfetch\s*\(|\bimport\s*\(/);
+  const dataImport = "const { SUPPORT_LINES } = require('./companion-support-lines');";
+  assert.ok(source.includes(dataImport));
+  assert.doesNotMatch(source.replace(dataImport, ''), /\brequire\s*\(|\bfetch\s*\(|\bimport\s*\(/);
+  const bank = fs.readFileSync(require.resolve('../src/main/companion-support-lines'), 'utf8');
+  assert.doesNotMatch(bank, /\brequire\s*\(|\bfetch\s*\(|\bimport\s*\(|\beval\s*\(|\bprocess\b/);
   const answer = reply('найди рецепты моти', {});
   assert.equal(typeof answer, 'string');
   assert.doesNotMatch(answer, /уже открыл|открыла браузер|нашла рецепт/);

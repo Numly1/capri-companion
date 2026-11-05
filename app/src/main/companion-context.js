@@ -5,9 +5,11 @@ const path = require('node:path');
 const readline = require('node:readline');
 const { spawn } = require('node:child_process');
 const { sessionId: spotifySessionId, controls: spotifyControls } = require('./companion-spotify-control');
+const { DRAWING_LINES } = require('./companion-support-lines');
 
 const POLL_MS = 10000;
-const DRAW_DWELL = 90000;
+const DRAW_DWELL = 45000;
+const DRAW_FOCUS_GRACE = 45000;
 const MUSIC_DWELL = 30000;
 const GLOBAL_SPACING = 60000;
 const MAX_COVER_BYTES = 24576;
@@ -80,7 +82,7 @@ function cooldownFor(value, legacy) {
   return (Number.isFinite(minutes) && minutes > 0 ? Math.min(240, Math.max(1, minutes)) : 12) * 60000;
 }
 
-function reactionFor(kind, state, lang, pick = Math.random, previousLine = null) {
+function reactionFor(kind, state, lang, pick = Math.random, previousLine = null, usedLines = null) {
   const ja = lang === 'ja' || lang === 'jp';
   let lines;
   if (kind === 'drawing') {
@@ -89,16 +91,7 @@ function reactionFor(kind, state, lang, pick = Math.random, previousLine = null)
       `${app}を開いてるね。アイデアの時間？ 私はネオンの隅で応援してる。`,
       `${app}、出番だね。細部で迷ったら、少し離れて全体を見るのもあり。`,
       `${app}が前にいる。ひらめいたもの、自由に試してみよう。`,
-    ] : [
-      `${app} — твоя территория. Круто, что ты находишь время творить. Я тут за тебя болею.`,
-      `Эй, художница. Не обязательно делать идеально с первой попытки. Ты умница, что пробуешь — я на твоей стороне.`,
-      `У нас тут время для творчества. Смелее с идеями, кнопку отмены ещё никто не отменял. Я рядом.`,
-      `Пока ты в ${app}, напомню: твои идеи заслуживают попытки. Давай, художница, я в тебя верю.`,
-      `Творить — уже круто. Дай себе право на черновик, странную идею и ещё одну попытку. Твоя Капри поддерживает.`,
-      `Если что-то не выходит сразу, это не повод ругать себя. Ты можешь пробовать в своём темпе. Я прикрою.`,
-      `Маленькое сообщение из неонового угла: ты умница. Рисуй в своё удовольствие, а я побуду рядом.`,
-      `Художница, мой респект за время для творчества. Когда захочешь передохнуть — сохрани работу и потянись.`,
-    ];
+    ] : DRAWING_LINES[drawingStage(state.drawing.activeSeconds)];
   } else {
     const music = state.music;
     const track = music.artist ? `${music.artist} — ${music.title}` : music.title;
@@ -112,17 +105,27 @@ function reactionFor(kind, state, lang, pick = Math.random, previousLine = null)
       `Приняла «${track}». С музыкой даже обычный день немного похож на сцену из фильма.`,
     ];
   }
+  if (usedLines && lines.every(line => usedLines.has(line))) usedLines.clear();
+  const remaining = lines.filter(line => line !== previousLine && !usedLines?.has(line));
+  if (remaining.length) lines = remaining;
   const value = Number(pick());
   let index = Math.max(0, Math.min(lines.length - 1, Math.floor((Number.isFinite(value) ? value : 0) * lines.length)));
   if (lines[index] === previousLine) index = (index + 1) % lines.length;
+  usedLines?.add(lines[index]);
   return { kind, line: lines[index], face: kind === 'drawing' ? 'smug' : 'laugh', action: kind === 'drawing' ? 'curious' : 'hop' };
 }
+
+const drawingStage = seconds => Number(seconds) >= 1200 ? 'long' : Number(seconds) >= 300 ? 'steady' : 'start';
 
 class ContextTracker {
   constructor({ now = Date.now, random = Math.random } = {}) {
     this.now = now;
     this.random = random;
     this.drawing = null;
+    this.pausedDrawing = null;
+    this.drawingLines = new Map();
+    this.pendingDrawing = null;
+    this.retryDrawingAt = -Infinity;
     this.song = null;
     this.seenSongs = new Set();
     this.lastReactionAt = -Infinity;
@@ -131,20 +134,31 @@ class ContextTracker {
     this.sequence = 0;
   }
 
-  sample(raw, cfg = {}) {
+  sample(raw, cfg = {}, { drawingReady = true } = {}) {
     const at = this.now();
     const enabled = enabledIntegrations(cfg);
     if (!enabled.spotifyMetadata && !enabled.krita) {
       this.drawing = null;
+      this.pausedDrawing = null;
+      this.pendingDrawing = null;
       this.song = null;
       return { state: { enabled: false, spotifyEnabled: false, spotifyWidgetEnabled: false, kritaEnabled: false, available: false, drawing: null, music: null, updatedAt: at }, reaction: null };
     }
     const snapshot = sanitizeSnapshot(raw);
-    if (!enabled.krita) snapshot.drawingApp = null;
+    if (!enabled.krita) {
+      snapshot.drawingApp = null;
+      this.drawing = null; this.pausedDrawing = null; this.pendingDrawing = null;
+    }
     if (!enabled.spotifyMetadata) snapshot.music = null;
     if (snapshot.drawingApp !== this.drawing?.app) {
-      this.drawing = snapshot.drawingApp ? { app: snapshot.drawingApp, since: at } : null;
+      if (this.drawing?.app === 'Krita') this.pausedDrawing = { ...this.drawing, pausedAt: at };
+      const resume = snapshot.drawingApp === 'Krita' && this.pausedDrawing && at >= this.pausedDrawing.pausedAt
+        && at - this.pausedDrawing.pausedAt <= DRAW_FOCUS_GRACE;
+      this.drawing = snapshot.drawingApp ? { app: snapshot.drawingApp,
+        since: resume ? this.pausedDrawing.since + at - this.pausedDrawing.pausedAt : at } : null;
+      if (snapshot.drawingApp === 'Krita') this.pausedDrawing = null;
     }
+    if (this.pausedDrawing && at - this.pausedDrawing.pausedAt > DRAW_FOCUS_GRACE) this.pausedDrawing = null;
     const music = snapshot.music;
     const key = music ? `${music.artist.toLowerCase()}\u0000${music.title.toLowerCase()}` : null;
     // Display metadata alone must never build a delayed reaction opportunity.
@@ -158,25 +172,43 @@ class ContextTracker {
     const state = {
       enabled: true, spotifyEnabled: enabled.spotify, spotifyWidgetEnabled: enabled.spotifyWidget, kritaEnabled: enabled.krita,
       available: true, mediaAvailable: enabled.spotifyMetadata && snapshot.mediaAvailable,
-      drawing: this.drawing ? { app: this.drawing.app, activeSeconds: Math.floor((at - this.drawing.since) / 1000) } : null,
+      drawing: this.drawing ? { app: this.drawing.app, activeSeconds: Math.max(0, Math.floor((at - this.drawing.since) / 1000)) } : null,
       music, updatedAt: at,
     };
     const kritaCooldown = cooldownFor(cfg.kritaIntervalMinutes, cfg.companionIntervalMinutes);
     const spotifyCooldown = cooldownFor(cfg.spotifyIntervalMinutes, cfg.companionIntervalMinutes);
     let kind = null;
     if (at - this.lastReactionAt >= GLOBAL_SPACING) {
-      if (this.drawing?.app === 'Krita' && at - this.drawing.since >= DRAW_DWELL && at - this.lastKindAt.drawing >= kritaCooldown) kind = 'drawing';
+      if (drawingReady && at >= this.retryDrawingAt && this.drawing?.app === 'Krita' && at - this.drawing.since >= DRAW_DWELL && at - this.lastKindAt.drawing >= kritaCooldown) kind = 'drawing';
       else if (this.song?.playing && this.song.since !== null && at - this.song.since >= MUSIC_DWELL && !this.seenSongs.has(key) && at - this.lastKindAt.music >= spotifyCooldown) kind = 'music';
     }
     let reaction = null;
     if (kind) {
+      const previousDrawingAt = this.lastKindAt.drawing;
       this.lastReactionAt = at;
       this.lastKindAt[kind] = at;
       if (kind === 'music') this.seenSongs.add(key);
-      reaction = { ...reactionFor(kind, state, cfg.responseLanguage || cfg.lang, this.random, this.lastLines[kind]), id: ++this.sequence };
+      const language = cfg.responseLanguage || cfg.lang;
+      const bankKey = `${language === 'ja' || language === 'jp' ? 'ja' : 'ru'}:${drawingStage(state.drawing?.activeSeconds)}`;
+      if (kind === 'drawing' && !this.drawingLines.has(bankKey)) this.drawingLines.set(bankKey, new Set());
+      reaction = { ...reactionFor(kind, state, language, this.random, this.lastLines[kind], kind === 'drawing' ? this.drawingLines.get(bankKey) : null), id: ++this.sequence };
+      if (kind === 'drawing') this.pendingDrawing = { id: reaction.id, issuedAt: at, previousDrawingAt };
       this.lastLines[kind] = reaction.line;
     }
     return { state, reaction };
+  }
+
+  reacted(id, accepted) {
+    const pending = this.pendingDrawing;
+    const at = this.now();
+    if (!Number.isSafeInteger(id) || typeof accepted !== 'boolean' || pending?.id !== id) return false;
+    this.pendingDrawing = null;
+    if (at < pending.issuedAt || at - pending.issuedAt > 30000) return false;
+    if (!accepted && this.lastKindAt.drawing === pending.issuedAt) {
+      this.lastKindAt.drawing = pending.previousDrawingAt;
+      this.retryDrawingAt = at + GLOBAL_SPACING;
+    }
+    return true;
   }
 }
 
@@ -251,7 +283,9 @@ function start(send, cfgGetter = () => ({}), options = {}) {
       try { raw = JSON.parse(line.replace(/^\uFEFF/, '')); } catch { return; }
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
       if (options.onSnapshot) { try { options.onSnapshot(raw); } catch {} }
-      publish(tracker.sample(raw, config()));
+      let drawingReady = true;
+      try { if (options.canReact) drawingReady = options.canReact() === true; } catch { drawingReady = false; }
+      publish(tracker.sample(raw, config(), { drawingReady }));
     });
     // Helper diagnostics can contain OS data. Consume them, never forward/log them.
     processRef.stderr.on('data', () => {});
@@ -273,9 +307,10 @@ function start(send, cfgGetter = () => ({}), options = {}) {
   running = {
     stop() { stopped = true; clearInterval(timer); lines?.close(); child?.kill(); child = null; lines = null; activeConfig = () => ({ companionContext: false }); latest = { enabled: false, available: false, drawing: null, music: null, updatedAt: Date.now() }; },
     getContext,
+    reacted: (id, accepted) => tracker.reacted(id, accepted),
   };
   supervise();
   return running;
 }
 
-module.exports = { start, stop, getContext, getConversationContext, conversationContext, ContextTracker, classifyDrawing, sanitizeSnapshot, sanitizeCover, enabledIntegrations, POLL_MS, DRAW_DWELL, MUSIC_DWELL, GLOBAL_SPACING, MAX_COVER_BYTES, MAX_MEDIA_LINE };
+module.exports = { start, stop, getContext, getConversationContext, conversationContext, ContextTracker, classifyDrawing, sanitizeSnapshot, sanitizeCover, enabledIntegrations, POLL_MS, DRAW_DWELL, DRAW_FOCUS_GRACE, MUSIC_DWELL, GLOBAL_SPACING, MAX_COVER_BYTES, MAX_MEDIA_LINE };

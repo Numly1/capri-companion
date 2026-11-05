@@ -31,6 +31,7 @@ const companionSS14 = require('./companion-ss14');
 const companionMinecraft = require('./companion-minecraft');
 const companionRiot = require('./companion-riot');
 const companionVisits = require('./companion-visits-controller');
+const support = require('./companion-support').create();
 const companionDiscord = require('./companion-discord');
 const { WatchingTracker, sanitizeWatching } = require('./companion-watching');
 const { chooseVisionModel } = require('./companion-model-choice');
@@ -51,6 +52,9 @@ let visitsService = null;
 let latestWatching = null;
 let latestWatchingAt = 0;
 let presencePet = { mode: 'idle', chat: false };
+let contextReady = false;
+let contextReadyAt = 0;
+let contextService = null;
 const SELF_TEST = process.argv.includes('--companion-self-test') && Boolean(process.env.CAPRI_SELF_TEST_DIR);
 // Keep this personal adaptation's settings separate from the original Capri app.
 const companionData = SELF_TEST ? path.join(path.resolve(process.env.CAPRI_SELF_TEST_DIR), 'userdata') : path.join(app.getPath('appData'), 'CapriCompanion');
@@ -531,10 +535,18 @@ function rebuildTray() {
       { type: 'separator' },
       ...[5, 12, 20, 30].map((minutes) => ({ label: `Пауза ${minutes} мин`, type: 'radio', checked: (cfg.spotifyIntervalMinutes || 12) === minutes, click: () => updateConfig({ spotifyIntervalMinutes: minutes }) })),
     ] },
+    { label: 'Поддержи меня', submenu: [
+      ...[['encouragement', 'Подбодри меня'], ['creativeBlock', 'Застряла на рисунке'], ['frustration', 'Ничего не получается'],
+        ['rest', 'Мне нужна передышка'], ['celebration', 'Похвали меня · маленькая победа']].map(([category, label]) => ({
+        label, click: () => sendCommand('support', { category }),
+      })),
+    ] },
     { label: 'Krita', submenu: [
       { label: 'Реагировать на рисование', type: 'checkbox', checked: cfg.kritaReactions !== false, click: (item) => updateConfig({ kritaReactions: item.checked, ...(item.checked && { companionContext: true }) }) },
+      { label: 'Подбодри за рисование сейчас', click: () => sendCommand('support', { category: 'encouragement' }) },
+      { label: 'Статус Krita · обычная / Steam', click: () => sendCommand('kritaStatus') },
       { type: 'separator' },
-      ...[5, 12, 20, 30].map((minutes) => ({ label: `Пауза ${minutes} мин`, type: 'radio', checked: (cfg.kritaIntervalMinutes || 12) === minutes, click: () => updateConfig({ kritaIntervalMinutes: minutes }) })),
+      ...[2, 3, 5, 12, 20, 30].map((minutes) => ({ label: `Пауза ${minutes} мин`, type: 'radio', checked: (cfg.kritaIntervalMinutes || 3) === minutes, click: () => updateConfig({ kritaIntervalMinutes: minutes }) })),
     ] },
     { label: 'Озвучивать реплики', type: 'checkbox', checked: cfg.companionVoice !== false, click: (item) => updateConfig({ companionVoice: item.checked }) },
     { label: 'Фоновые реплики', submenu: [
@@ -910,8 +922,15 @@ function registerIpc() {
   ipcMain.handle('claude:found', () => fs.existsSync(path.dirname(activeHooks().status().file))); // Claude Code keeps its settings there
   ipcMain.on('claude:help', () => shell.openExternal(activeAssistant().help));
   ipcMain.handle('windows:get', () => lastWindows);
-  ipcMain.on('companion:presence', (_event, value) => {
+  ipcMain.on('companion:presence', (event, value) => {
+    if (event.sender !== overlay?.webContents || event.senderFrame !== overlay?.webContents.mainFrame) return;
     presencePet = { mode: value?.mode === 'sleep' ? 'sleep' : 'idle', chat: value?.chat === true };
+    contextReady = value?.contextReady === true;
+    contextReadyAt = Date.now();
+  });
+  ipcMain.on('companion:context-reaction', (event, value) => {
+    if (event.sender !== overlay?.webContents || event.senderFrame !== overlay?.webContents.mainFrame) return;
+    if (Number.isSafeInteger(value?.id) && typeof value?.accepted === 'boolean') contextService?.reacted(value.id, value.accepted);
   });
   ipcMain.handle('companion:discord-status', async (_event, request) => {
     const status = await discordService?.check({ force: request?.retry === true }) || { state: 'off' };
@@ -963,6 +982,16 @@ function registerIpc() {
   });
   ipcMain.on('chat:stop', (_e, id) => chats.get(id)?.abort());
   ipcMain.handle('companion:context', () => companionContext.getContext());
+  ipcMain.handle('companion:support', (event, category) => {
+    if (event.sender !== overlay?.webContents || event.senderFrame !== overlay?.webContents.mainFrame) return { ok: false };
+    return typeof category === 'string' && category.length <= 30 ? support.line(category, config.load().responseLanguage) : { ok: false };
+  });
+  ipcMain.handle('companion:krita-status', () => {
+    const cfg = config.load(), state = companionContext.getContext();
+    return { enabled: cfg.companionContext !== false && cfg.kritaReactions !== false, available: state.available === true,
+      active: state.drawing?.app === 'Krita' && Date.now() - state.updatedAt >= 0 && Date.now() - state.updatedAt <= 25000,
+      intervalMinutes: cfg.kritaIntervalMinutes || 3 };
+  });
   ipcMain.handle('companion:music-dance', () => { sendCommand('musicDance'); return { ok: true }; });
   ipcMain.handle('companion:spotify-control', (_e, request) => spotifyControl.control(request, config.load()));
   ipcMain.handle('companion:transcribe', (_e, request) => companionSpeech.transcribe(request, config.load(), setup.openKeys));
@@ -1295,7 +1324,8 @@ function main() {
       clipboardWrite: code => clipboard.writeText(code),
     });
     const watchingTracker = new WatchingTracker();
-    companionContext.start((snapshot) => overlay?.webContents.send('companion:context', snapshot), () => config.load(), {
+    contextService = companionContext.start((snapshot) => overlay?.webContents.send('companion:context', snapshot), () => config.load(), {
+      canReact: () => contextReady && Date.now() - contextReadyAt >= 0 && Date.now() - contextReadyAt <= 7000 && config.load().visible !== false,
       onSnapshot: raw => {
         const cfg = config.load();
         const event = watchingTracker.sample(raw.watching, cfg);

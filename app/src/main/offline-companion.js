@@ -4,8 +4,17 @@
 // `context` contains only metadata supplied by the host; it is never evidence of screen contents.
 const previous = new Map();
 const MAX_INPUT = 8000;
+const { SUPPORT_LINES } = require('./companion-support-lines');
 
 const INTENTS = [
+  ['support', ['поддержи', 'поддержи меня', 'подбодри', 'нужна поддержка', 'поверь в меня', '応援して'],
+    SUPPORT_LINES.encouragement, ['急がなくていいよ。自分のペースで一歩ずつ。私はここで応援してる。']],
+  ['creative-block', ['не получается рисовать', 'не могу рисовать', 'застряла на рисунке', 'застрял на рисунке', 'творческий тупик', 'рисунок не получается', '絵が描けない'],
+    SUPPORT_LINES.creativeBlock, ['小さなラフから試してみよう。最初から完成形じゃなくていい。']],
+  ['frustration', ['ничего не получается', 'все испортила', 'всё испортила', 'проиграла', 'проиграл', 'опять проигрыш', 'неудача', '失敗した'],
+    SUPPORT_LINES.frustration, ['ひとつの失敗で全部は決まらないよ。少し休んで、次の小さな一歩を選ぼう。']],
+  ['celebration', ['у меня получилось', 'я справилась', 'я справился', 'закончила рисунок', 'закончил рисунок', 'маленькая победа', 'できた'],
+    SUPPORT_LINES.celebration, ['その一歩に拍手。今日はここまで進めた自分もねぎらおう。']],
   ['capabilities', ['что умеешь', 'что ты можешь', 'помощь', 'команды', 'help', '何ができる', 'できること'],
     ['Офлайн у меня готовые реакции: поддержка, шутки, маленькие советы и ответы о переданном состоянии. Можно спросить время, дату или что играет. Для свободных ответов нужен ИИ в настройках.'],
     ['オフラインでは、励まし、冗談、小さなヒントなどの決まった反応ができるよ。時刻や日付、渡された曲の情報も。自由な会話は設定でAIを有効にしてね。']],
@@ -232,7 +241,9 @@ function reply(text, cfg = {}, context = {}) {
     return (ja ? 'このPCの日付では ' : 'По календарю этого компьютера — ') + new Intl.DateTimeFormat(ja ? 'ja-JP' : 'ru-RU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }).format(now) + (ja ? '。' : '.');
   }
   for (const [id, triggers, ru, jp] of INTENTS) {
-    if (has(input, triggers)) return choose(id, language, ja ? jp : ru).replace(/\{user\}/g, name ? (ja ? `、${name}` : `, ${name}`) : '');
+    const category = { tired: 'rest', break: 'rest', anger: 'frustration', 'compliment-give': 'encouragement', motivation: 'encouragement' }[id];
+    const lines = ja ? jp : category ? [...ru, ...SUPPORT_LINES[category]] : ru;
+    if (has(input, triggers)) return choose(id, language, lines).replace(/\{user\}/g, name ? (ja ? `、${name}` : `, ${name}`) : '');
   }
   return choose('fallback', language, ja ? [
     'その話には、今の決まった返事ではうまく答えられないよ。「冗談」や「何ができる？」を試すか、設定でAIを有効にしてね。',

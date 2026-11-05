@@ -14,18 +14,18 @@ test('drawing classification is a narrow allowlist and never outputs document ti
   assert.deepEqual(safe, { drawingApp: 'Krita', music: null, mediaAvailable: false });
 });
 
-test('drawing waits 90 seconds, praises during a long session with its own cooldown and no immediate repeat', () => {
+test('drawing waits 45 seconds, praises during a long session with its own cooldown and no immediate repeat', () => {
   let at = 0;
   const tracker = new ContextTracker({ now: () => at, random: () => 0 });
   const sample = () => tracker.sample({ drawingApp: 'Krita' });
   assert.equal(sample().reaction, null);
-  at = 89999; assert.equal(sample().reaction, null);
-  at = 90000;
+  at = 44999; assert.equal(sample().reaction, null);
+  at = 45000;
   const first = sample().reaction;
   assert.equal(first.kind, 'drawing');
-  assert.match(first.line, /Круто|умница|верю|твор/i);
-  at = 809999; assert.equal(sample().reaction, null);
-  at = 810000;
+  assert.match(first.line, /Krita|худож|иде|твор/i);
+  at = 764999; assert.equal(sample().reaction, null);
+  at = 765000;
   const second = sample().reaction;
   assert.equal(second.kind, 'drawing');
   assert.notEqual(second.line, first.line);
@@ -51,18 +51,18 @@ test('Krita praise uses its configured interval and disabling it requires a fres
   const disabled = sample({ ...cfg, kritaReactions: false });
   assert.equal(disabled.reaction, null); assert.equal(disabled.state.drawing, null);
   at = 900000; assert.equal(sample().reaction, null);
-  at = 989999; assert.equal(sample().reaction, null);
-  at = 990000; assert.equal(sample().reaction.kind, 'drawing');
+  at = 944999; assert.equal(sample().reaction, null);
+  at = 945000; assert.equal(sample().reaction.kind, 'drawing');
 });
 
-test('short switches reset drawing dwell and no content-specific art praise is fabricated', () => {
+test('short switches pause drawing dwell, do not count reference time and never fabricate visual art praise', () => {
   let at = 0;
   const t = new ContextTracker({ now: () => at, random: () => 0 });
   t.sample({ drawingApp: 'Krita' });
-  at = 80000; t.sample({ drawingApp: null });
-  at = 85000; t.sample({ drawingApp: 'Krita' });
-  at = 100000; assert.equal(t.sample({ drawingApp: 'Krita' }).reaction, null);
-  at = 175000;
+  at = 40000; assert.equal(t.sample({ drawingApp: null }).state.drawing, null);
+  at = 45000; assert.equal(t.sample({ drawingApp: 'Krita' }).state.drawing.activeSeconds, 40);
+  at = 49999; assert.equal(t.sample({ drawingApp: 'Krita' }).reaction, null);
+  at = 50000;
   const line = t.sample({ drawingApp: 'Krita' }).reaction.line;
   assert.match(line, /Krita/);
   assert.doesNotMatch(line, /вижу|цвета|композици|красиво нарисова/i);

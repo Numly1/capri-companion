@@ -18,7 +18,7 @@ const DEFAULTS = {
   spotifyWidget: true,
   kritaReactions: true,
   spotifyIntervalMinutes: 12,
-  kritaIntervalMinutes: 12,
+  kritaIntervalMinutes: 3,
   companionVoice: true,
   digitalVoice: true,
   voiceLanguage: 'ru',

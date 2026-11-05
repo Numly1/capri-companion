@@ -69,6 +69,18 @@ public static class CapriWindows {
   static readonly Regex GAME = new Regex(@"\\(?:steamapps\\common|Epic Games|Riot Games|XboxGames|GOG Galaxy\\Games)\\([^\\]+)\\", RegexOptions.IgnoreCase);
   static readonly Regex NOT_GAME = new Regex(@"launcher|client|redistributable|steamworks", RegexOptions.IgnoreCase);
 
+  // Steam also distributes desktop software. Its library folder alone does not make Krita a game.
+  // Keep this process-based and exact: document titles and a folder merely named Krita are irrelevant.
+  public static string GameForProgram(string program, string executablePath) {
+    var name = (program ?? "").Trim().ToLowerInvariant();
+    if (name.EndsWith(".exe", StringComparison.Ordinal)) name = name.Substring(0, name.Length - 4);
+    var riot = RiotKind(name);
+    if (riot != "") return riot == "valorant" ? "Valorant" : "League of Legends";
+    if (name == "krita") return "";
+    var match = GAME.Match(executablePath ?? "");
+    return match.Success && !NOT_GAME.IsMatch(match.Groups[1].Value) ? match.Groups[1].Value : "";
+  }
+
   // The program behind the window in front, when it changes: its name, and the game it is, if one.
   static void Program(IntPtr fg) {
     if (fg == procOf) return;
@@ -78,15 +90,13 @@ public static class CapriWindows {
     uint pid;
     GetWindowThreadProcessId(fg, out pid);
     try { proc = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName.ToLowerInvariant(); } catch {}
-    string riot = RiotKind(proc);
-    if (riot != "") game = riot == "valorant" ? "Valorant" : "League of Legends";
+    game = GameForProgram(proc, null);
     IntPtr h = OpenProcess(0x1000, false, pid); // PROCESS_QUERY_LIMITED_INFORMATION
     if (h == IntPtr.Zero) return;
     var path = new StringBuilder(1024);
     int size = path.Capacity;
     if (QueryFullProcessImageName(h, 0, path, ref size)) {
-      var m = GAME.Match(path.ToString());
-      if (riot == "" && m.Success && !NOT_GAME.IsMatch(m.Groups[1].Value)) game = m.Groups[1].Value;
+      game = GameForProgram(proc, path.ToString());
     }
     CloseHandle(h);
   }
