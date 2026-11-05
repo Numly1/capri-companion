@@ -97,7 +97,7 @@ export class Guide {
 
   // Run a scene: she stays put meanwhile, and stops pointing at the end whatever happened.
   // A new scene ends the one that was on (its panel goes, it returns); only the last one cleans up.
-  async scene(play) {
+  async scene(play, { keepStowed = false } = {}) {
     const { capri } = this;
     const id = ++this.sceneId;
     this.answer(null);
@@ -105,11 +105,11 @@ export class Guide {
     // Background info panels still cannot interrupt a chat in Panel.say().
     if (this.panel.current?.chat && !this.panel.current.guide) this.panel.hide();
     capri.stopPointing(); // whatever the last scene was showing
-    if (capri.stowed) {
+    if (capri.stowed && !keepStowed) {
       this.host.setConfig({ visible: true });
       await capri.unstow();
     }
-    capri.wake();
+    if (!keepStowed) capri.wake();
     this.running = true;
     capri.nextMove = capri.nextGaze = performance.now() + IDLE_FOR;
     try {

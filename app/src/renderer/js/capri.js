@@ -1313,6 +1313,7 @@ export class Capri {
 
   // Out of her biochip: a streak from the chip, and she arrives next to it.
   async unstow() {
+    if (this.visitAway) return;
     this.unstowAfter = this.stowing;
     if (!this.stowed) return;
     this.stowed = false;

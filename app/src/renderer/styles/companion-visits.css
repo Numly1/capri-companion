@@ -1,0 +1,7 @@
+.companion-visit-guest { position: fixed; top: 0; left: 0; z-index: 2; pointer-events: none; user-select: none; contain: layout paint; }
+.companion-visit-guest[hidden] { display: none !important; }
+[data-visit-hidden="true"] #capri,
+[data-visit-hidden="true"] #mask,
+[data-visit-hidden="true"] #fx { visibility: hidden !important; pointer-events: none !important; }
+.companion-visit-guest canvas { display: block; pointer-events: none; }
+.companion-visit-guest__name { box-sizing: border-box; max-width: 100%; margin: -22px auto 0; width: max-content; padding: 4px 7px; border-left: 2px solid #35ff7a; background: #140e20; color: #e9dcff; font: 10px 'Segoe UI', sans-serif; overflow-wrap: anywhere; text-align: center; }

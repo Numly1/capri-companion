@@ -30,6 +30,7 @@ const { installReference } = require('./companion-voice-clips');
 const companionSS14 = require('./companion-ss14');
 const companionMinecraft = require('./companion-minecraft');
 const companionRiot = require('./companion-riot');
+const companionVisits = require('./companion-visits-controller');
 const companionDiscord = require('./companion-discord');
 const { WatchingTracker, sanitizeWatching } = require('./companion-watching');
 const { chooseVisionModel } = require('./companion-model-choice');
@@ -46,6 +47,7 @@ let ss14Service = null;
 let minecraftService = null;
 let riotService = null;
 let discordService = null;
+let visitsService = null;
 let latestWatching = null;
 let latestWatchingAt = 0;
 let presencePet = { mode: 'idle', chat: false };
@@ -517,6 +519,11 @@ function rebuildTray() {
         checked: cfg.watchIntervalMinutes === watchIntervalMinutes, click: () => updateConfig({ watchIntervalMinutes }) })),
       { label: 'Реплики без спойлеров · без отправки кадров', enabled: false },
     ] },
+    { label: 'В гости · локальная сеть / Radmin', submenu: [
+      { label: 'Пригласить, подключиться, отправить Капри', click: () => sendCommand('visits') },
+      { label: 'Вернуть Капри домой', click: () => { visitsService?.action({ action: 'return' }); } },
+      { label: 'Отключить визиты и закрыть соединение', click: () => { visitsService?.action({ action: 'disconnect' }); } },
+    ] },
     { label: 'Spotify', submenu: [
       { label: 'Капри, потанцуй', click: () => sendCommand('musicDance') },
       { label: 'Показывать трек и обложку', type: 'checkbox', checked: cfg.spotifyWidget !== false, click: (item) => updateConfig({ spotifyWidget: item.checked, ...(item.checked && { companionContext: true }) }) },
@@ -963,6 +970,10 @@ function registerIpc() {
   ipcMain.handle('companion:ss14-status', () => ({ ...ss14Service?.getState(), enabled: config.load().ss14Reactions === true, active: Boolean(lastWindows?.ss14?.active) }));
   ipcMain.handle('companion:minecraft-status', () => ({ ...minecraftService?.getState(), enabled: config.load().minecraftReactions === true, active: Boolean(lastWindows?.minecraft?.active) }));
   ipcMain.handle('companion:riot-status', () => riotService?.getState() || { active: false, available: false });
+  ipcMain.handle('companion:visits', (event, request) => {
+    if (event.sender !== overlay?.webContents || event.senderFrame !== overlay?.webContents.mainFrame) return { ok: false, error: 'Визиты доступны только в окне Капри.' };
+    return visitsService?.action(request) || { ok: false, error: 'Капри ещё запускается. Попробуй через секунду.' };
+  });
   let localScreenPending = false;
   ipcMain.handle('companion:screen', async () => {
     if (localScreenPending) return { ok: false, local: true, error: 'Уже читаю экран локально. Подожди немного.' };
@@ -1279,6 +1290,10 @@ function main() {
     registerIpc();
     createOverlay();
     createTray();
+    visitsService = companionVisits.create({
+      onState: state => overlay?.webContents.send('companion:visits', state),
+      clipboardWrite: code => clipboard.writeText(code),
+    });
     const watchingTracker = new WatchingTracker();
     companionContext.start((snapshot) => overlay?.webContents.send('companion:context', snapshot), () => config.load(), {
       onSnapshot: raw => {
@@ -1352,6 +1367,7 @@ function main() {
     minecraftService?.stop();
     riotService?.stop();
     discordService?.stop();
+    visitsService?.stop();
     for (const runtime of referenceRuntimes.values()) runtime.stop();
   });
   app.on('window-all-closed', (e) => e.preventDefault());

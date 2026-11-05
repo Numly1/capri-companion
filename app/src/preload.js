@@ -49,6 +49,8 @@ contextBridge.exposeInMainWorld('host', {
   onMinecraft: on('companion:minecraft'),
   onRiot: on('companion:riot'),
   riotStatus: () => ipcRenderer.invoke('companion:riot-status'),
+  onVisits: on('companion:visits'),
+  visitsAction: request => ipcRenderer.invoke('companion:visits', request),
   onWatching: on('companion:watching'),
   reportPresence: state => ipcRenderer.send('companion:presence', state),
   discordStatus: request => ipcRenderer.invoke('companion:discord-status', request),

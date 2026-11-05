@@ -23,6 +23,7 @@ import { CompanionMinecraft } from './companion-minecraft.js';
 import { CompanionWatching } from './companion-watching.js';
 import { CompanionRiot } from './companion-riot.js';
 import { CompanionMusicDance } from './companion-music-dance.js';
+import { CompanionVisits } from './companion-visits.js';
 import { linesFor } from './lines.js';
 import { pick, fmt, reducedMotion } from './util.js';
 
@@ -111,6 +112,7 @@ async function boot() {
   let interactive = false;
   let mouse = null;
   let spotifyWidget = null;
+  let visits = null;
   const setInteractive = (on) => {
     if (on === interactive) return;
     interactive = on;
@@ -131,13 +133,14 @@ async function boot() {
   let wakeTimer = 0;
   let gameInteraction = () => {};
   const comeOut = () => {
+    if (visits?.away) { visits.open(); return; }
     gameInteraction();
     if (capri.stowed) host.setConfig({ visible: true }); // the tray and Ctrl+Alt+C follow
     capri.unstow();
   };
   const hoverChip = () => {
     chip.pointer = chip.visible && mouse && chip.contains(mouse.x, mouse.y) ? mouse : null;
-    const near = mask.visible && mouse && mask.contains(mouse.x, mouse.y, 30);
+    const near = !visits?.away && mask.visible && mouse && mask.contains(mouse.x, mouse.y, 30);
     mask.pointer = near ? mouse : null;
     if (!near) {
       clearTimeout(wakeTimer);
@@ -331,9 +334,24 @@ async function boot() {
   chat.onClose = () => { speech.cancelRecording(); speech.stop(); };
   companion.onSay = (text) => speech.say(text);
   let wantsOut = config.visible !== false; // not put away in your settings (Ctrl+Alt+C, her menu)
-  pc.wantsOut = () => wantsOut;
+  const visitVisibility = away => { document.documentElement.dataset.visitHidden = away || !wantsOut ? 'true' : 'false'; };
+  visitVisibility(false);
+  pc.wantsOut = () => wantsOut && !visits?.away;
   pc.configure(config);
   pc.onRest = () => speech.stop();
+  visits = new CompanionVisits({ host, capri, panel, chat, guide, image, onAwayChange: away => {
+    capri.visitAway = away;
+    visitVisibility(away);
+    if (away) {
+      speech.stop(); musicDance.stop(); capri.endAct(false); capri.stopPointing();
+      capri.stowNow();
+      // The guide stays accessible from the tray while the pet is visiting.
+      if (guide.running) panel.resume(); else panel.hide();
+    } else if (wantsOut) { capri.unstow(); }
+    else { capri.stowNow(); }
+  } }, { guestOptions: { reduced: () => reducedMotion.matches } });
+  visits.configure(config);
+  window.addEventListener('beforeunload', () => visits.dispose({ restoreAway: false }));
 
   // Clicking her: what's going on, or she offers to talk. Sulking, she turns her back on you.
   capri.onClick = () => {
@@ -580,7 +598,7 @@ async function boot() {
   };
 
   // what's in here, for --dev scripts (debug route `eval`)
-  window.dev = { capri, brain, panel, chat, guide, fx, voice, bond, jealousy, reminders, look, pc, setup, screens: () => screens };
+  window.dev = { capri, brain, panel, chat, guide, fx, voice, bond, jealousy, reminders, look, pc, setup, visits, screens: () => screens };
 
   host.onClaudeEvent((evt) => brain.handle(evt));
   host.onWindows((data) => {
@@ -687,6 +705,7 @@ async function boot() {
     screenPinned = cfg.follow === false;
     look.configure(cfg);
     wantsOut = cfg.visible !== false;
+    visitVisibility(visits.away);
     pc.configure(cfg);
     reminders.sync(cfg.reminders); // one may have been cancelled from her menu
     capri.wander = cfg.wander;
@@ -717,9 +736,15 @@ async function boot() {
   });
 
   host.onCommand(async (cmd) => {
+    if (visits.away && !['visits', 'stow', 'screens', 'rearmed', 'rearm'].includes(cmd.name)) {
+      visits.open(); return;
+    }
     if (cmd.name !== 'stow') pc.interact();
     const t = brain.t;
     switch (cmd.name) {
+      case 'visits':
+        await visits.open();
+        break;
       case 'riotStatus': {
         const state = await host.riotStatus();
         const cfg = await host.getConfig();
@@ -940,6 +965,7 @@ async function boot() {
         else if (typeof guide[cmd.topic] === 'function') guide.scene(() => guide[cmd.topic]());
         break;
       case 'stow': // Ctrl+Alt+C: into her biochip, or back out
+        if (visits.away) { visits.open(); break; }
         if (cmd.on) capri.stow();
         else capri.unstow();
         break;
@@ -1002,9 +1028,11 @@ async function boot() {
 
   // entrance: her face big in the corner says hi, then she dives down to her spot
   // (put away last time: she starts in her biochip)
-  if (config.visible === false) capri.stowNow();
+  await visits.refresh(); // A reloaded renderer must not replay an entrance while her pet is away.
+  if (config.visible === false || visits.away) capri.stowNow();
   else if (intro) await capri.intro(capri.spot('post'));
   else await capri.materialize(capri.spot('post'));
+  if (visits.away) return;
   // Windows has its animations off and she's following it: she barely moves. The first time, she
   // says so and asks whether to move anyway (her menu › Animations changes it later).
   if (reducedMotion.setting === 'auto' && reducedMotion.system && !config.motionAsked) {
