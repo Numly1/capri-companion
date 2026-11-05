@@ -11,6 +11,7 @@ namespace CapriReadyUpdate {
         static readonly byte[] Old=Encoding.UTF8.GetBytes("MZ old Capri fixture"), New=Encoding.UTF8.GetBytes("MZ new Capri fixture version nine");
         static void Check(bool ok,string name) { if(!ok) throw new Exception("FAIL: "+name); passed++; Console.WriteLine("PASS "+name); }
         static void Fails(Action body,string name) { bool failed=false; try { body(); } catch { failed=true; } Check(failed,name); }
+        static void FailsWith(Action body,string text,string name) { string message=""; try { body(); } catch(Exception error) { message=error.Message; } Check(message.Contains(text),name); }
         static void Put(string file,byte[] value) { Directory.CreateDirectory(Path.GetDirectoryName(file)); File.WriteAllBytes(file,value); }
         static string Fixture(string name) {
             var folder=Path.Combine(root,name); Directory.CreateDirectory(folder);
@@ -33,6 +34,11 @@ namespace CapriReadyUpdate {
         static UpdateSpec Spec() {
             var path=Path.Combine(root,"new-payload.exe"); File.WriteAllBytes(path,New);
             return new UpdateSpec { Version="0.4.4-companion.9",Bytes=New.Length,Sha256=UpdaterCore.Hash(path) };
+        }
+        static string PortableFixture(string name,string launcher="Capri-Companion-0.4.4-companion.9-win-x64.exe") {
+            var folder=Fixture(name);
+            File.Move(Path.Combine(folder,UpdateSpec.Launcher),Path.Combine(folder,launcher));
+            return folder;
         }
         static string Apply(string folder,UpdateSpec spec=null,CancellationToken token=default(CancellationToken),Func<string,bool> running=null,Action<string> checkpoint=null) {
             return UpdaterCore.Apply(folder,spec??Spec(),delegate{return new MemoryStream(New,false);},token,null,running??delegate{return false;},checkpoint);
@@ -83,6 +89,49 @@ namespace CapriReadyUpdate {
                     try { Thread.Sleep(500); Check(UpdaterCore.LauncherRunning(nativeLauncher),"real exact running wrapper detected"); Check(!UpdaterCore.LauncherRunning(Path.Combine(valid,UpdateSpec.Launcher)),"another installation is not treated as running"); }
                     finally { if(!child.HasExited) child.Kill(); child.WaitForExit(); }
                 }
+                const string portableName="Capri-Companion-0.4.4-companion.9-win-x64.exe";
+                var renamed=PortableFixture("renamed portable"); var portable=Path.Combine(renamed,portableName);
+                Check(UpdaterCore.ValidateFolder(renamed)==renamed && UpdaterCore.ResolveLauncher(renamed)==portable,"unique portable filename is recognized without renaming");
+                var portableResult=Apply(renamed);
+                Check(portableResult==portable && UpdaterCore.Hash(portable)==Spec().Sha256 && !File.Exists(Path.Combine(renamed,UpdateSpec.Launcher)),"update preserves the real portable filename");
+                Check(UpdaterCore.Hash(Path.Combine(renamed,Path.GetFileNameWithoutExtension(portableName)+".previous.exe"))==oldHash,"portable backup uses its real basename");
+                var renamedManifest=UpdaterCore.ReadJson(Path.Combine(renamed,"bundle-manifest.json"),32*1024*1024);
+                var renamedRows=(Dictionary<string,object>)renamedManifest["files"];
+                Check(Convert.ToString(renamedManifest["entryPoint"])==portableName && renamedRows.Count==2 && renamedRows.ContainsKey(portableName) && !renamedRows.ContainsKey(UpdateSpec.Launcher) && Convert.ToString(((Dictionary<string,object>)renamedRows["voice/model.safetensors"])["sha256"])=="voice-stays-exact","manifest entry point moves only the launcher row and preserves all voice rows");
+                var renamedReceipt=UpdaterCore.ReadJson(Path.Combine(renamed,".capri-update.json"),8192);
+                Check(Convert.ToString(renamedReceipt["launcher"])==portableName,"receipt records the actual launcher filename");
+                Apply(renamed); Check(Directory.GetFiles(renamed,"*.previous*.exe").Length==1,"portable update remains idempotent");
+                var uppercase=PortableFixture("uppercase portable","CAPRI-COMPANION-0.4.4-COMPANION.9-WIN-X64.EXE");
+                Check(Path.GetFileName(Apply(uppercase))=="CAPRI-COMPANION-0.4.4-COMPANION.9-WIN-X64.EXE","portable matching is case insensitive and preserves spelling");
+                var ambiguous=PortableFixture("multiple portable files"); Put(Path.Combine(ambiguous,"Capri-Companion-0.4.4-companion.8-win-x64.exe"),Old);
+                FailsWith(delegate{Apply(ambiguous);},"несколько EXE","multiple versions are rejected instead of choosing newest");
+                Check(UpdaterCore.Hash(Path.Combine(ambiguous,portableName))==oldHash,"ambiguous versions remain untouched");
+                var canonicalAndPortable=Fixture("canonical plus portable"); Put(Path.Combine(canonicalAndPortable,portableName),Old);
+                FailsWith(delegate{Apply(canonicalAndPortable);},"несколько EXE","canonical plus portable is also ambiguous");
+                var nonApps=Fixture("updater downloader and backups"); File.Delete(Path.Combine(nonApps,UpdateSpec.Launcher));
+                foreach(var name in new[]{"Capri-Update.exe","Capri-Download.exe","Запустить Капри.previous.exe","Capri-Companion-0.4.4-companion.9-win-x64.previous.exe"}) Put(Path.Combine(nonApps,name),Old);
+                FailsWith(delegate{UpdaterCore.ValidateFolder(nonApps);},"нет приложения Капри","updater downloader and previous backups are never launcher candidates");
+                var missingMarker=Fixture("missing marker name"); File.Delete(Path.Combine(missingMarker,"capri-ready.json"));
+                FailsWith(delegate{UpdaterCore.ValidateFolder(missingMarker);},"capri-ready.json","missing marker error identifies the exact file");
+                FailsWith(delegate{UpdaterCore.ValidateFolder(missing);},"server.py","missing voice module error identifies the exact file");
+                var portableLocked=PortableFixture("locked portable"); using(var handle=new FileStream(Path.Combine(portableLocked,portableName),FileMode.Open,FileAccess.Read,FileShare.None)) Fails(delegate{Apply(portableLocked);},"locked actual portable is rejected");
+                var portableRunning=PortableFixture("running portable callback"); string checkedPath=null;
+                Fails(delegate{Apply(portableRunning,null,default(CancellationToken),delegate(string actual){checkedPath=actual;return true;});},"running portable is not replaced");
+                Check(checkedPath==Path.Combine(portableRunning,portableName),"running detection receives actual portable path");
+                foreach(var phase in new[]{"app","manifest","receipt"}) {
+                    var rollback=PortableFixture("portable rollback "+phase); var before=File.ReadAllText(Path.Combine(rollback,"bundle-manifest.json"));
+                    File.WriteAllText(Path.Combine(rollback,".capri-update.json"),"{\"old\":true}");
+                    Fails(delegate{Apply(rollback,null,default(CancellationToken),null,delegate(string at){if(at==phase)throw new IOException("fixture failure");});},"portable injected failure after "+phase);
+                    Check(UpdaterCore.Hash(Path.Combine(rollback,portableName))==oldHash && File.ReadAllText(Path.Combine(rollback,"bundle-manifest.json"))==before && File.ReadAllText(Path.Combine(rollback,".capri-update.json"))=="{\"old\":true}" && !File.Exists(Path.Combine(rollback,UpdateSpec.Launcher)),"portable rollback restores real file and original metadata after "+phase);
+                }
+                var collision=PortableFixture("manifest row collision"); var collisionFile=Path.Combine(collision,"bundle-manifest.json");
+                var collisionData=UpdaterCore.ReadJson(collisionFile,32*1024*1024); ((Dictionary<string,object>)collisionData["files"])[portableName]=new Dictionary<string,object>{{"bytes",17},{"sha256","unrelated-existing-row"}};
+                File.WriteAllText(collisionFile,UpdaterCore.JsonText(collisionData));
+                Fails(delegate{Apply(collision);},"conflicting manifest launcher rows are rejected");
+                Check(UpdaterCore.Hash(Path.Combine(collision,portableName))==oldHash,"metadata collision leaves the actual application untouched");
+                var folderChanged=PortableFixture("launcher changes before commit");
+                Fails(delegate{UpdaterCore.Apply(folderChanged,Spec(),delegate{Put(Path.Combine(folderChanged,UpdateSpec.Launcher),Old);return new MemoryStream(New,false);},CancellationToken.None,null,delegate{return false;});},"launcher ambiguity introduced during preparation blocks the commit");
+                Check(UpdaterCore.Hash(Path.Combine(folderChanged,portableName))==oldHash,"preparation race leaves previous portable unchanged");
                 Console.WriteLine("RESULT "+passed+" passed; fixture directory "+root); return 0;
             } catch(Exception error) { Console.Error.WriteLine(error); Console.Error.WriteLine("Fixtures retained: "+root); return 1; }
         }
