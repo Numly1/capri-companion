@@ -81,7 +81,7 @@ test('a recoverable Qwen synthesis error can be retried without restarting or sp
     let spawns = 0;
     const runtime = create({ ...locations, profile: 'capri-sample' }, {
       exists: () => true, sleep: async () => {},
-      fetch: async () => new Response(JSON.stringify({ model: 'qwen3-tts-1.7b-capri', state: 'error', backendVersion: 'capri-cpu-fp16-1', retryable })),
+      fetch: async () => new Response(JSON.stringify({ model: 'qwen3-tts-1.7b-capri', state: 'error', backendVersion: 'capri-cpu-fp16-2', retryable })),
       spawn() { spawns++; const child = new EventEmitter(); child.kill = () => {}; return child; },
     });
     assert.equal(await runtime.ensure(), retryable);

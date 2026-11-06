@@ -10,6 +10,7 @@ import os
 import threading
 import uuid
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -20,7 +21,7 @@ PREVIEW_TEXT = "Мы рядом. Продолжай, художница."
 MAX_TEXT = 400
 MAX_AUDIO = 8 * 1024**2
 MAX_CACHE = 128 * 1024**2
-BACKEND_VERSION = "capri-cpu-fp16-1"
+BACKEND_VERSION = "capri-cpu-fp16-2"
 
 
 def prepare_weight_reader():
@@ -80,6 +81,7 @@ class VoiceService:
         self.reference_hash = None
         self.threads_configured = False
         self.lock = threading.Lock()
+        self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="capri-voice")
         self.state = "unloaded"
         self.last_error = None
         self.runtime.mkdir(parents=True, exist_ok=True)
@@ -91,6 +93,10 @@ class VoiceService:
         os.environ["DO_NOT_TRACK"] = "1"
         os.environ["OMP_NUM_THREADS"] = str(threads)
         os.environ["MKL_NUM_THREADS"] = str(threads)
+        # Variable-length audio must not grow native primitive caches across
+        # responses while a game is using the remaining system memory.
+        os.environ["ONEDNN_PRIMITIVE_CACHE_CAPACITY"] = "0"
+        os.environ["DNNL_PRIMITIVE_CACHE_CAPACITY"] = "0"
         if offline:
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -230,6 +236,15 @@ class VoiceService:
         if not self.lock.acquire(blocking=False):
             raise BlockingIOError("voice_busy")
         try:
+            # Load and every inference share one caller thread. Threaded HTTP
+            # handlers otherwise create new native CPU workspaces per request.
+            # The outer gate rejects overlap instead of queuing stale speech.
+            return self.worker.submit(self._synthesize, text.strip()).result()
+        finally:
+            self.lock.release()
+
+    def _synthesize(self, text):
+        try:
             text = text.strip()
             cache = self.cache_file(text)
             cached = self.read_cache(cache)
@@ -270,8 +285,6 @@ class VoiceService:
             self.state = "error"
             self.last_error = "Не удалось подготовить реплику голосом Капри."
             raise
-        finally:
-            self.lock.release()
 
 
 class LocalServer(ThreadingHTTPServer):

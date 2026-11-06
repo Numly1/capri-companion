@@ -36,7 +36,7 @@ function create({ root, portableDir, dataDir, profile = 'reference' }, options =
       if (!response.ok || Number(response.headers.get('content-length')) > 8192) return false;
       const info = await response.json();
       return info.model === engine.model && (info.state !== 'error'
-        || (profile === 'capri-sample' && info.backendVersion === 'capri-cpu-fp16-1' && info.retryable === true));
+        || (profile === 'capri-sample' && info.backendVersion === 'capri-cpu-fp16-2' && info.retryable === true));
     } catch { return false; }
   }
   async function ensure() {

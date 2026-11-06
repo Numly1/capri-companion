@@ -23,6 +23,7 @@ import http.client
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -58,6 +59,7 @@ class ServiceFixture(unittest.TestCase):
         self.reference = self.directory / 'reference.audio'
         self.reference.write_bytes(REFERENCE)
         self.service = server.VoiceService(self.reference, self.directory / 'runtime', offline=True)
+        self.addCleanup(self.service.worker.shutdown, wait=True)
 
 class HttpTests(ServiceFixture):
     def setUp(self):
@@ -99,8 +101,9 @@ class HttpTests(ServiceFixture):
         self.assertEqual(health['state'], 'unloaded')
         self.assertEqual(health['model'], 'qwen3-tts-1.7b-capri')
         self.assertEqual(health['modelRevision'], 'fd4b254389122332181a7c3db7f27e918eec64e3')
-        self.assertEqual(health['backendVersion'], 'capri-cpu-fp16-1')
+        self.assertEqual(health['backendVersion'], 'capri-cpu-fp16-2')
         self.assertEqual(health['storageBackend'], 'pread')
+        self.assertEqual(health['cpuPrecision'], 'fp16-projections-fp32')
         self.assertEqual(health['referenceSHA256'], hashlib.sha256(REFERENCE).hexdigest())
         self.assertEqual(headers['Cache-Control'], 'no-store')
         self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
@@ -186,6 +189,9 @@ class LoaderTests(ServiceFixture):
         patch.dict(sys.modules, {'safetensors': safetensors, 'torch': torch, 'qwen_tts': qwen}).start()
         original_import = builtins.__import__
         def checked_import(name, *args, **kwargs):
+            if name in ('torch', 'qwen_tts'):
+                self.assertEqual(os.environ.get('ONEDNN_PRIMITIVE_CACHE_CAPACITY'), '0')
+                self.assertEqual(os.environ.get('DNNL_PRIMITIVE_CACHE_CAPACITY'), '0')
             if name == 'qwen_tts':
                 # Transformers may bind safe_open at import time. The reader
                 # must already force pread before that import occurs.
@@ -254,6 +260,117 @@ class LoaderTests(ServiceFixture):
         self.assertTrue(old_cache.is_file())
         self.assertIsNone(self.service.read_cache(new_cache))
 
+class WorkerTests(ServiceFixture):
+    def test_different_live_callers_use_the_same_persistent_inference_thread(self):
+        callers = {}
+        inference_threads = []
+        results = {}
+        errors = []
+        starts = [threading.Event(), threading.Event()]
+        completed = [threading.Event(), threading.Event()]
+        keep_callers_alive = threading.Event()
+        def synthesize(text):
+            inference_threads.append(threading.get_ident())
+            return text.encode()
+        self.service._synthesize = synthesize
+        def caller(index):
+            try:
+                if not starts[index].wait(3):
+                    raise AssertionError('caller did not start')
+                callers[index] = threading.get_ident()
+                results[index] = self.service.synthesize('phrase-' + str(index))
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                completed[index].set()
+                keep_callers_alive.wait(3)
+        threads = [threading.Thread(target=caller, args=(index,), daemon=True) for index in range(2)]
+        for thread in threads:
+            thread.start()
+        try:
+            starts[0].set()
+            self.assertTrue(completed[0].wait(2))
+            starts[1].set()
+            self.assertTrue(completed[1].wait(2))
+        finally:
+            for start in starts:
+                start.set()
+            keep_callers_alive.set()
+            for thread in threads:
+                thread.join(timeout=3)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertEqual(results, {0: b'phrase-0', 1: b'phrase-1'})
+        self.assertEqual(len(set(callers.values())), 2, 'keep both callers alive to prevent thread-ID reuse')
+        self.assertEqual(len(inference_threads), 2)
+        self.assertEqual(len(set(inference_threads)), 1)
+        self.assertTrue(set(inference_threads).isdisjoint(callers.values()))
+
+    def test_busy_request_is_rejected_before_worker_becomes_available(self):
+        entered = threading.Event()
+        release = threading.Event()
+        busy_finished = threading.Event()
+        calls, accepted, rejected, errors = [], [], [], []
+        def synthesize(text):
+            calls.append(text)
+            entered.set()
+            if not release.wait(4):
+                raise AssertionError('blocked inference was not released')
+            return b'first-audio'
+        self.service._synthesize = synthesize
+        def first_caller():
+            try:
+                accepted.append(self.service.synthesize('first'))
+            except BaseException as error:
+                errors.append(error)
+        def busy_caller():
+            try:
+                self.service.synthesize('must-not-be-queued')
+                errors.append(AssertionError('busy request was unexpectedly accepted'))
+            except BlockingIOError:
+                rejected.append(True)
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                busy_finished.set()
+        first = threading.Thread(target=first_caller, daemon=True)
+        busy = threading.Thread(target=busy_caller, daemon=True)
+        first.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            busy.start()
+            self.assertTrue(busy_finished.wait(1), 'reject busy requests while inference is still blocked')
+            self.assertFalse(release.is_set())
+            self.assertEqual(calls, ['first'])
+        finally:
+            release.set()
+            first.join(timeout=3)
+            if busy.ident is not None:
+                busy.join(timeout=3)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(busy.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(rejected, [True])
+        self.assertEqual(accepted, [b'first-audio'])
+        self.assertEqual(calls, ['first'], 'rejected speech must never execute later')
+
+    def test_worker_failure_releases_gate_and_next_request_uses_same_worker(self):
+        inference_threads = []
+        def synthesize(text):
+            inference_threads.append(threading.get_ident())
+            if text == 'fails':
+                raise RuntimeError('fixture failure')
+            return b'recovered-audio'
+        self.service._synthesize = synthesize
+        with self.assertRaisesRegex(RuntimeError, 'fixture failure'):
+            self.service.synthesize('fails')
+        self.assertFalse(self.service.lock.locked())
+        self.assertEqual(self.service.synthesize('next'), b'recovered-audio')
+        self.assertFalse(self.service.lock.locked())
+        self.assertEqual(len(inference_threads), 2)
+        self.assertEqual(len(set(inference_threads)), 1)
+        self.assertNotEqual(inference_threads[0], threading.get_ident())
+
 unittest.main(argv=[sys.argv[0]], verbosity=2)
 `;
   const result = spawnSync(python, ['-I', '-B', '-c', program,
@@ -264,6 +381,6 @@ unittest.main(argv=[sys.argv[0]], verbosity=2)
     maxBuffer: 1024 * 1024,
   });
   assert.equal(result.status, 0, result.stderr || result.error?.message || result.stdout);
-  assert.match(result.stderr, /Ran 9 tests/);
+  assert.match(result.stderr, /Ran 12 tests/);
   assert.match(result.stderr, /\bOK\b/);
 });
