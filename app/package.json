@@ -1,6 +1,6 @@
 {
   "name": "capri-companion-local",
-  "version": "0.4.4-companion.12",
+  "version": "0.4.4-companion.13",
   "description": "Personal desktop companion based on Capri Desktop by mochiiwuff, with local replies and optional AI.",
   "author": "mochiiwuff",
   "repository": "github:mochiiwuff/capri-desktop",
@@ -46,6 +46,8 @@
     "productName": "Capri Companion",
     "files": [
       "src/**",
+      "!**/__pycache__/**",
+      "!**/*.pyc",
       "assets/**",
       "hooks/**",
       "scripts/**",
@@ -58,7 +60,9 @@
       "hooks/**",
       "src/main/windows.ps1",
       "src/main/companion-media.ps1",
-      "src/main/companion-voice.ps1"
+      "src/main/companion-voice.ps1",
+      "src/main/companion-qwen-server.py",
+      "src/main/companion-voice-cpu.py"
     ],
     "win": {
       "target": [

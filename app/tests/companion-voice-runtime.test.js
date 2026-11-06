@@ -64,6 +64,32 @@ test('missing reference never contacts a service, missing installation never spa
   assert.equal(noInstallation.calls.spawn.length, 0); assert.equal(noInstallation.calls.sleep.length, 0);
 });
 
+test('app update supplies the Qwen server while reusing existing portable Python and weights', () => {
+  const base = path.join(workspace, 'gift'), root = path.join(workspace, 'temp', 'resources', 'app.asar');
+  const server = path.join(workspace, 'temp', 'resources', 'app.asar.unpacked', 'src', 'main', 'companion-qwen-server.py');
+  const runtime = path.join(base, '.tools', 'capri-qwen-voice'), python = path.join(runtime, 'venv', 'Scripts', 'python.exe');
+  const oldServer = path.join(base, 'voice-backend-qwen', 'server.py');
+  const files = new Set([server, oldServer, python]);
+  assert.deepEqual(findInstallation({ root, portableDir: base, profile: 'capri-sample' }, file => files.has(file)), { server, runtime, python });
+  files.delete(oldServer);
+  assert.deepEqual(findInstallation({ root, portableDir: base, profile: 'capri-sample' }, file => files.has(file)), { server, runtime, python });
+  files.delete(server); assert.equal(findInstallation({ root, portableDir: base, profile: 'capri-sample' }, file => files.has(file)), null);
+});
+
+test('a recoverable Qwen synthesis error can be retried without restarting or spawning another server', async () => {
+  for (const retryable of [true, false]) {
+    let spawns = 0;
+    const runtime = create({ ...locations, profile: 'capri-sample' }, {
+      exists: () => true, sleep: async () => {},
+      fetch: async () => new Response(JSON.stringify({ model: 'qwen3-tts-1.7b-capri', state: 'error', backendVersion: 'capri-cpu-fp16-1', retryable })),
+      spawn() { spawns++; const child = new EventEmitter(); child.kill = () => {}; return child; },
+    });
+    assert.equal(await runtime.ensure(), retryable);
+    assert.equal(spawns, retryable ? 0 : 1);
+    runtime.stop();
+  }
+});
+
 test('reuses an existing matching local service and stop never kills an external process', async () => {
   const f = fixture({ files: [reference], fetch: () => healthy() });
   assert.equal(await f.runtime.ensure(), true);
@@ -80,7 +106,7 @@ test('owned runtime uses fixed CPU/offline arguments and only its own child is s
   assert.equal(await f.runtime.ensure(), true);
   assert.equal(f.calls.spawn.length, 1);
   assert.deepEqual(f.calls.spawn[0], { file: expected.python,
-    args: [expected.server, '--runtime', expected.runtime, '--reference', reference, '--device', 'cpu', '--threads', '2', '--offline'],
+    args: ['-I', '-B', expected.server, '--runtime', expected.runtime, '--reference', reference, '--device', 'cpu', '--threads', '2', '--offline'],
     init: { cwd: path.dirname(expected.server), windowsHide: true, stdio: 'ignore' },
   });
   assert.deepEqual(f.calls.sleep, [250]);

@@ -11,8 +11,9 @@ function findInstallation({ root, portableDir, profile = 'reference' }, exists =
   const engine = PROFILES[profile];
   if (!engine) return null;
   const bases = [portableDir, root && path.resolve(root, '..'), portableDir && path.resolve(portableDir, '..', '..')].filter(Boolean);
+  const bundled = profile === 'capri-sample' && root && path.join(root, 'src', 'main', 'companion-qwen-server.py').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
   for (const base of [...new Set(bases)]) {
-    const server = path.join(base, engine.directory, 'server.py');
+    const server = bundled && exists(bundled) ? bundled : path.join(base, engine.directory, 'server.py');
     const runtime = path.join(base, '.tools', engine.runtime);
     const python = path.join(runtime, 'venv', 'Scripts', 'python.exe');
     if (exists(server) && exists(python)) return { server, runtime, python };
@@ -34,7 +35,8 @@ function create({ root, portableDir, dataDir, profile = 'reference' }, options =
       const response = await request(`http://127.0.0.1:${engine.port}/health`, { signal: AbortSignal.timeout(1200), redirect: 'error' });
       if (!response.ok || Number(response.headers.get('content-length')) > 8192) return false;
       const info = await response.json();
-      return info.model === engine.model && info.state !== 'error';
+      return info.model === engine.model && (info.state !== 'error'
+        || (profile === 'capri-sample' && info.backendVersion === 'capri-cpu-fp16-1' && info.retryable === true));
     } catch { return false; }
   }
   async function ensure() {
@@ -47,7 +49,7 @@ function create({ root, portableDir, dataDir, profile = 'reference' }, options =
       if (!install || generation !== epoch) return false;
       if (!child) {
         try {
-          const processRef = run(install.python, [install.server, '--runtime', install.runtime,
+          const processRef = run(install.python, ['-I', '-B', install.server, '--runtime', install.runtime,
             '--reference', path.join(dataDir, engine.reference), '--device', 'cpu', '--threads', '2', '--offline'],
           { cwd: path.dirname(install.server), windowsHide: true, stdio: 'ignore' });
           child = processRef;
